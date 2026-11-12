@@ -1,0 +1,19 @@
+/target
+**/*.rs.bk
+
+# Recorded feed logs are large and mostly noise. The ONE log that backs the
+# README's measured result is committed deliberately, as data/ — everything else stays local.
+/logs/
+*.jsonl
+!data/*.jsonl
+!fixtures/*.jsonl
+
+.env
+.DS_Store
+
+
+# Added by cargo
+#
+# already existing elements were commented out
+
+#/target

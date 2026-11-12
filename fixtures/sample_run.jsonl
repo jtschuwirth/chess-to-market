@@ -1,0 +1,12 @@
+{"mono_ms":0,"wall_unix_ms":1764000000000,"payload":{"source":"note","message":"run started (hand-written fixture)"}}
+{"mono_ms":1200,"wall_unix_ms":1764000001200,"payload":{"source":"market","asset_id":"demo-asset-1","event_type":"book","best_bid":0.41,"best_ask":0.43,"raw":{"event_type":"book"}}}
+{"mono_ms":4500,"wall_unix_ms":1764000004500,"payload":{"source":"ply","game_id":"demo-game","ply":1,"san":"e4","uci":"e2e4","fen":"rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1"}}
+{"mono_ms":6100,"wall_unix_ms":1764000006100,"payload":{"source":"eval","game_id":"demo-game","ply":1,"eval_cp_white":28,"mate_in":null,"only_move_gap_cp":6,"depth":18}}
+{"mono_ms":9900,"wall_unix_ms":1764000009900,"payload":{"source":"ply","game_id":"demo-game","ply":2,"san":"e5","uci":"e7e5","fen":"rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"}}
+{"mono_ms":11800,"wall_unix_ms":1764000011800,"payload":{"source":"eval","game_id":"demo-game","ply":2,"eval_cp_white":24,"mate_in":null,"only_move_gap_cp":11,"depth":18}}
+{"mono_ms":12400,"wall_unix_ms":1764000012400,"payload":{"source":"market","asset_id":"demo-asset-1","event_type":"price_change","best_bid":0.41,"best_ask":0.44,"raw":{"event_type":"price_change"}}}
+{"mono_ms":15000,"wall_unix_ms":1764000015000,"payload":{"source":"ply","game_id":"demo-game","ply":3,"san":"Nf3","uci":"g1f3","fen":"rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"}}
+{"mono_ms":17300,"wall_unix_ms":1764000017300,"payload":{"source":"eval","game_id":"demo-game","ply":3,"eval_cp_white":-310,"mate_in":null,"only_move_gap_cp":290,"depth":18}}
+{"mono_ms":19050,"wall_unix_ms":1764000019050,"payload":{"source":"market","asset_id":"demo-asset-1","event_type":"price_change","best_bid":0.33,"best_ask":0.36,"raw":{"event_type":"price_change"}}}
+{"mono_ms":21000,"wall_unix_ms":1764000021000,"payload":{"source":"note","message":"polymarket: reconnected after 1 attempt"}}
+{"mono_ms":22500,"wall_unix_ms":1764000022500,"payload":{"source":"eval","game_id":"demo-game","ply":4,"eval_cp_white":null,"mate_in":5,"only_move_gap_cp":null,"depth":18}}
