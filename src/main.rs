@@ -6,11 +6,11 @@
 
 use anyhow::Result;
 use clap::Parser;
-use eval_lag::cli::Cli;
-use eval_lag::observation::Clock;
-use eval_lag::sink::JsonlSink;
-use eval_lag::sources;
-use eval_lag::Observation;
+use chess_to_market::cli::Cli;
+use chess_to_market::observation::Clock;
+use chess_to_market::sink::JsonlSink;
+use chess_to_market::sources;
+use chess_to_market::Observation;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{error, info, warn};

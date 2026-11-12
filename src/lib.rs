@@ -1,4 +1,4 @@
-//! eval-lag — measures how long a prediction market takes to price information a chess engine
+//! chess-to-market — measures how long a prediction market takes to price information a chess engine
 //! already has.
 //!
 //! # The shape of this program

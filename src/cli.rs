@@ -6,7 +6,7 @@ use clap::Parser;
 
 #[derive(Parser, Debug, Clone)]
 #[command(
-    name = "eval-lag",
+    name = "chess-to-market",
     about = "Measures how long a prediction market takes to price information a chess engine already has.",
     long_about = "Read-only. Places no orders, holds no keys, touches no funds."
 )]

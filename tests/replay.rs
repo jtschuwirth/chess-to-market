@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use eval_lag::sources::replay;
-use eval_lag::Payload;
+use chess_to_market::sources::replay;
+use chess_to_market::Payload;
 
 fn source_tag(p: &Payload) -> &'static str {
     match p {
@@ -79,7 +79,7 @@ async fn mate_and_centipawn_scores_stay_distinct() {
 
 #[tokio::test]
 async fn malformed_line_is_an_error_naming_the_line() {
-    let dir = std::env::temp_dir().join("eval-lag-test");
+    let dir = std::env::temp_dir().join("chess-to-market-test");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("broken.jsonl");
     std::fs::write(
