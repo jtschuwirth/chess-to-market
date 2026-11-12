@@ -30,7 +30,12 @@
 //! Handshake with a timeout. A wrong `--engine-path` must fail with a clear message rather than
 //! hanging, and "the program hung" is the least debuggable failure you can ship.
 //!
-//! Send one [`Payload::Eval`](crate::Payload::Eval) per evaluated position.
+//! Send one [`Payload::Eval`](crate::Payload::Eval) **per completed depth of interest** (12 and
+//! 16), each carrying `wdl_white` from `UCI_ShowWDL` normalised to white, `search_ms`, and the
+//! MultiPV `lines` with their own per-mille `wdl` from the side to move.
+//!
+//! `wdl_white` is not optional. Everything downstream reasons in probability space; `cp_white` is
+//! kept for the log, not for decisions.
 
 use anyhow::Result;
 use std::path::Path;
@@ -41,12 +46,13 @@ use crate::observation::{Clock, Observation};
 pub async fn run(
     engine_path: &Path,
     depth: u32,
+    multipv: u32,
     clock: Clock,
     tx: Sender<Observation>,
 ) -> Result<()> {
     let _ = tx
         .send(clock.note(format!(
-            "engine: not implemented (T-04). path={} depth={depth}",
+            "engine: not implemented (T-04). path={} depth={depth} multipv={multipv}",
             engine_path.display()
         )))
         .await;

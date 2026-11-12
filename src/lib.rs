@@ -19,4 +19,4 @@ pub mod observation;
 pub mod sink;
 pub mod sources;
 
-pub use observation::{Clock, Observation, Payload};
+pub use observation::{Clock, Line, Observation, Payload};

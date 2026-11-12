@@ -8,6 +8,11 @@
 !data/*.jsonl
 !fixtures/*.jsonl
 
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
 .env
 .DS_Store
 

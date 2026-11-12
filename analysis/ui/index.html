@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>chess-to-market</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #fff; --line: #e4e2dd; --ink: #1f1e1c; --dim: #6f6c66;
+    --accent: #3b6ea5; --warn: #b3541e; --bad: #a32b2b; --good: #2f7d4f;
+    --white-win: #3b6ea5; --draw: #8a8780; --black-win: #a3522b;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #16181a; --panel: #1d2023; --line: #2d3236; --ink: #e8e6e3; --dim: #9a9790;
+      --accent: #7aa7d4; --warn: #e0894f; --bad: #e07a7a; --good: #68c48f;
+      --white-win: #7aa7d4; --draw: #a09d96; --black-win: #d08b5e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #16181a; --panel: #1d2023; --line: #2d3236; --ink: #e8e6e3; --dim: #9a9790;
+    --accent: #7aa7d4; --warn: #e0894f; --bad: #e07a7a; --good: #68c48f;
+    --white-win: #7aa7d4; --draw: #a09d96; --black-win: #d08b5e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 16px; margin: 0 0 2px; letter-spacing: -0.01em; }
+  h1 span { color: var(--dim); font-weight: 400; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--dim);
+       margin: 0 0 10px; font-weight: 600; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 18px; font-family: var(--mono); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+           padding: 14px 16px; margin-bottom: 14px; }
+  .row { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .stat { font-family: var(--mono); }
+  .stat b { display: block; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  .stat small { color: var(--dim); text-transform: uppercase; letter-spacing: 0.06em; font-size: 10px; }
+  table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; }
+  th { text-align: left; color: var(--dim); font-weight: 600; text-transform: uppercase;
+       font-size: 10px; letter-spacing: 0.06em; padding: 0 8px 6px 0; }
+  td { padding: 5px 8px 5px 0; border-top: 1px solid var(--line); vertical-align: top; }
+  .bad { color: var(--bad); } .good { color: var(--good); } .warn { color: var(--warn); }
+  .dim { color: var(--dim); }
+  .tag { font-family: var(--mono); font-size: 10px; padding: 1px 6px; border-radius: 4px;
+         border: 1px solid var(--line); color: var(--dim); }
+  .stream { font-family: var(--mono); font-size: 11.5px; max-height: 300px; overflow-y: auto; }
+  .stream div { padding: 2px 0; border-top: 1px solid var(--line); display: flex; gap: 10px; }
+  .stream i { color: var(--dim); font-style: normal; min-width: 62px; text-align: right; }
+  .stream u { text-decoration: none; min-width: 58px; }
+  svg { display: block; width: 100%; height: auto; }
+  .legend { display: flex; gap: 14px; font-size: 11px; color: var(--dim); margin-top: 6px;
+            font-family: var(--mono); flex-wrap: wrap; }
+  .legend i { width: 10px; height: 2px; display: inline-block; vertical-align: middle; margin-right: 4px; }
+  .empty { color: var(--dim); font-style: italic; padding: 8px 0; }
+  @media (max-width: 600px) { .wrap { padding: 14px 16px 40px; } .stat b { font-size: 18px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>chess-to-market <span id="logname"></span></h1>
+  <div class="sub" id="meta">connecting…</div>
+
+  <div class="panel" id="healthpanel">
+    <h2>Producer health</h2>
+    <div id="health" class="stream" style="max-height:none"></div>
+  </div>
+
+  <div class="panel">
+    <div class="row" id="stats"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Engine verdict &amp; market price</h2>
+    <svg id="chart" viewBox="0 0 900 300" preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Signals</h2>
+    <div id="signals"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Record stream <span class="tag">last 60</span></h2>
+    <div class="stream" id="stream"></div>
+  </div>
+</div>
+
+<script>
+const SRC_COLOR = { ply: "var(--accent)", eval: "var(--good)", market: "var(--warn)",
+                    signal: "var(--bad)", note: "var(--dim)" };
+
+function el(tag, attrs, kids) {
+  const n = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const k in (attrs || {})) n.setAttribute(k, attrs[k]);
+  (kids || []).forEach(c => n.appendChild(c));
+  return n;
+}
+
+function drawChart(s) {
+  const svg = document.getElementById("chart");
+  svg.textContent = "";
+  const W = 900, H = 300, L = 38, R = 12, T = 12, B = 26;
+  const xs = [];
+  for (const k in s.series) s.series[k].forEach(p => xs.push(p[0]));
+  for (const leg in s.leg_series) s.leg_series[leg].forEach(p => xs.push(p[0]));
+  if (!xs.length) {
+    svg.appendChild(el("text", { x: W / 2, y: H / 2, "text-anchor": "middle",
+      fill: "var(--dim)", "font-size": 13, "font-style": "italic" })).textContent =
+      "no eval or market records yet";
+    return;
+  }
+  const xmin = Math.min(...xs), xmax = Math.max(...xs) || 1;
+  const X = v => L + (W - L - R) * (xmax === xmin ? 0.5 : (v - xmin) / (xmax - xmin));
+  const Y = v => T + (H - T - B) * (1 - v);
+
+  // grid
+  for (let p = 0; p <= 1.0001; p += 0.25) {
+    svg.appendChild(el("line", { x1: L, x2: W - R, y1: Y(p), y2: Y(p),
+      stroke: "var(--line)", "stroke-width": 1 }));
+    const t = el("text", { x: L - 6, y: Y(p) + 4, "text-anchor": "end",
+      fill: "var(--dim)", "font-size": 10, "font-family": "var(--mono)" });
+    t.textContent = p.toFixed(2);
+    svg.appendChild(t);
+  }
+
+  const path = (pts, color, dash) => {
+    if (pts.length < 2) return;
+    let d = "";
+    pts.forEach((p, i) => { d += (i ? " L" : "M") + X(p[0]) + " " + Y(p[1]); });
+    svg.appendChild(el("path", { d, fill: "none", stroke: color, "stroke-width": 1.8,
+      "stroke-dasharray": dash || "", "stroke-linejoin": "round" }));
+  };
+
+  path(s.series.white_win, "var(--white-win)");
+  path(s.series.draw, "var(--draw)");
+  path(s.series.black_win, "var(--black-win)");
+
+  const legColors = ["#8b5cf6", "#0ea5a4", "#d97706", "#db2777"];
+  const legNames = Object.keys(s.leg_series);
+  legNames.forEach((leg, i) => {
+    const pts = s.leg_series[leg].filter(p => p[1] !== null).map(p => [p[0], p[1]]);
+    path(pts, legColors[i % legColors.length], "3 3");
+  });
+
+  // signal markers
+  (s.signals || []).forEach(sig => {
+    svg.appendChild(el("line", { x1: X(sig.x), x2: X(sig.x), y1: T, y2: H - B,
+      stroke: "var(--bad)", "stroke-width": 1.4, "stroke-dasharray": "2 2" }));
+    const t = el("text", { x: X(sig.x) + 4, y: T + 12, fill: "var(--bad)", "font-size": 10,
+      "font-family": "var(--mono)" });
+    t.textContent = (sig.san || ("ply " + sig.ply)) + " · " + sig.kind;
+    svg.appendChild(t);
+  });
+
+  svg.appendChild(el("line", { x1: L, x2: W - R, y1: H - B, y2: H - B,
+    stroke: "var(--line)", "stroke-width": 1 }));
+  [xmin, (xmin + xmax) / 2, xmax].forEach(v => {
+    const t = el("text", { x: X(v), y: H - 8, "text-anchor": "middle", fill: "var(--dim)",
+      "font-size": 10, "font-family": "var(--mono)" });
+    t.textContent = Math.round(v) + "s";
+    svg.appendChild(t);
+  });
+
+  const lg = document.getElementById("legend");
+  lg.innerHTML =
+    '<span><i style="background:var(--white-win)"></i>P(white win)</span>' +
+    '<span><i style="background:var(--draw)"></i>P(draw)</span>' +
+    '<span><i style="background:var(--black-win)"></i>P(black win)</span>' +
+    legNames.map((leg, i) =>
+      `<span><i style="background:${legColors[i % legColors.length]}"></i>${leg} ask</span>`).join("") +
+    '<span style="color:var(--bad)">┊ signal</span>';
+}
+
+function render(s) {
+  if (s.error) {
+    document.getElementById("meta").innerHTML = '<span class="bad">' + s.error + '</span>';
+    return;
+  }
+  document.getElementById("logname").textContent = s.log;
+  document.getElementById("meta").textContent =
+    `${s.records} records · ${s.span_s}s span · depths [${s.depths.join(", ")}] · legs [${s.legs.join(", ")}]`;
+
+  const c = s.counts || {};
+  document.getElementById("stats").innerHTML = [
+    ["plies", c.ply || 0], ["evals", c.eval || 0], ["market", c.market || 0],
+    ["signals", (s.signals || []).length],
+    ["paper P&L", "$" + s.pnl.toFixed(2)], ["fees", "$" + s.fees.toFixed(2)],
+  ].map(([k, v]) => `<div class="stat"><b>${v}</b><small>${k}</small></div>`).join("");
+
+  document.getElementById("health").innerHTML = (s.health || []).map(l => {
+    const cls = l.startsWith("!!") ? "bad" : l.startsWith("!") ? "warn" : "dim";
+    return `<div><span class="${cls}">${l}</span></div>`;
+  }).join("") + (s.problems || []).map(p =>
+    `<div><span class="bad">schema: ${p}</span></div>`).join("")
+    + (s.ordering || []).map(p => `<div><span class="warn">order: ${p}</span></div>`).join("");
+
+  const sig = s.signals || [];
+  document.getElementById("signals").innerHTML = sig.length === 0
+    ? '<div class="empty">no signals yet — a quiet game produces none, which is correct</div>'
+    : `<table><tr><th>t</th><th>ply</th><th>move</th><th>transition</th><th>room</th>
+       <th>findable</th><th>conf</th><th>position</th><th>why</th></tr>` +
+      sig.map(x => {
+        const p = x.position;
+        const pos = p
+          ? `<span class="${p.pnl >= 0 ? "good" : "bad"}">${p.leg} ${p.entry}→${p.exit} ` +
+            `${p.pnl >= 0 ? "+" : ""}${p.pnl.toFixed(2)}</span> <span class="dim">${p.reason}</span>`
+          : '<span class="dim">—</span>';
+        return `<tr><td>${x.x}s</td><td>${x.ply ?? "—"}</td><td>${x.san ?? "—"}</td>
+          <td>${x.before} → <b>${x.after}</b></td>
+          <td>${x.room ?? "—"}</td><td>${x.findability}</td><td>${x.confidence}</td>
+          <td>${pos}</td><td class="dim">${x.note}</td></tr>`;
+      }).join("") + "</table>";
+
+  document.getElementById("stream").innerHTML = (s.recent || []).slice().reverse().map(r =>
+    `<div><i>${r.x}s</i><u style="color:${SRC_COLOR[r.source] || "var(--dim)"}">${r.source}</u>` +
+    `<span>${r.text}</span></div>`).join("");
+
+  drawChart(s);
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/state", { cache: "no-store" });
+    render(await r.json());
+  } catch (e) {
+    document.getElementById("meta").innerHTML =
+      '<span class="warn">server unreachable — is `python -m analysis serve` still running?</span>';
+  }
+}
+tick();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>

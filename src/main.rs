@@ -68,10 +68,10 @@ async fn main() -> Result<()> {
         }
 
         if let Some(engine_path) = cli.engine_path.clone() {
-            let depth = cli.depth;
+            let (depth, multipv) = (cli.depth, cli.multipv);
             let tx = tx.clone();
             sources.spawn(async move {
-                sources::engine::run(&engine_path, depth, clock, tx).await?;
+                sources::engine::run(&engine_path, depth, multipv, clock, tx).await?;
                 Ok::<_, anyhow::Error>("engine: finished".to_string())
             });
         } else {
