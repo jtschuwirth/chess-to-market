@@ -1,0 +1,58 @@
+---
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  subtitle?: string;
+}
+
+const { title, subtitle } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title} · chess-to-market</title>
+    <meta
+      name="description"
+      content="Dashboard over the observation log: games, engine evaluations, market prices and signals."
+    />
+    <script is:inline>
+      // Before first paint, so the page never flashes the wrong theme.
+      try {
+        const t = localStorage.getItem("theme");
+        if (t) document.documentElement.dataset.theme = t;
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <header class="top">
+      <div class="wrap">
+        <h1>chess-to-market</h1>
+        {subtitle && <span class="muted mono">{subtitle}</span>}
+        <nav>
+          <span class="badge" id="conn"><span class="dot"></span><span>connecting…</span></span>
+          <a class="btn" href="/">Overview</a>
+          <button class="btn" id="theme" type="button">Theme</button>
+        </nav>
+      </div>
+    </header>
+    <main class="wrap">
+      <slot />
+    </main>
+    <script>
+      const root = document.documentElement;
+      document.getElementById("theme")?.addEventListener("click", () => {
+        const dark =
+          root.dataset.theme === "dark" ||
+          (!root.dataset.theme && matchMedia("(prefers-color-scheme: dark)").matches);
+        root.dataset.theme = dark ? "light" : "dark";
+        try {
+          localStorage.setItem("theme", root.dataset.theme);
+        } catch {}
+      });
+    </script>
+  </body>
+</html>

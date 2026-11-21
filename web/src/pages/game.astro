@@ -1,0 +1,236 @@
+---
+import Shell from "../layouts/Shell.astro";
+---
+
+<Shell title="Game" subtitle="engine vs market">
+  <section class="card" style="margin:16px 0">
+    <header>
+      <h2 id="gid" class="mono">game</h2>
+      <span class="badge" id="state"><span class="dot"></span><span>—</span></span>
+      <span class="sub" id="meta"></span>
+    </header>
+    <div class="legend" id="legend"></div>
+    <div class="chart" id="chart"></div>
+    <div class="row" style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn" id="toggle" type="button" aria-pressed="false">Table view</button>
+      <span class="muted" style="font-size:.78rem" id="chartnote"></span>
+    </div>
+    <div class="hidden" id="evaltable" style="max-height:320px;overflow:auto;margin-top:10px"></div>
+  </section>
+
+  <section class="grid cols-2" style="margin-bottom:14px">
+    <div class="card">
+      <header><h2>Signals</h2><span class="sub">hypothetical positions</span></header>
+      <div id="signals"></div>
+    </div>
+    <div class="card">
+      <header>
+        <h2>State changes</h2>
+        <span class="sub">a change with no signal was held by the cooldown</span>
+      </header>
+      <div id="changes"></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <header>
+      <h2>Moves</h2>
+      <span class="sub">move time is reconstructed from the PGN clocks, not from arrival</span>
+    </header>
+    <div id="plies" style="max-height:420px;overflow:auto"></div>
+  </section>
+</Shell>
+
+<script>
+  import { api, watch, type GameDetail, type Market } from "../lib/api";
+  import { drawChart, type Rule, type Series } from "../lib/chart";
+  import { clock, esc, moveOf, pct, price, secs, stateLabel, usd } from "../lib/format";
+
+  const $ = (id: string) => document.getElementById(id)!;
+  const params = new URLSearchParams(location.search);
+  const id = params.get("id") ?? "";
+  const run = params.has("run") ? Number(params.get("run")) : null;
+  const LEG_COLORS = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
+
+  const conn = (ok: boolean, text: string) => {
+    const c = $("conn");
+    c.className = `badge ${ok ? "good" : "bad"}`;
+    c.lastElementChild!.textContent = text;
+  };
+
+  function renderChart(g: GameDetail, m: Market) {
+    const series: Series[] = [
+      {
+        name: "White win",
+        color: "var(--series-1)",
+        points: g.evals.filter((e) => e.wdl_white).map((e) => ({ x: e.t, y: e.wdl_white![0] })),
+      },
+      {
+        name: "Draw",
+        color: "var(--series-3)",
+        points: g.evals.filter((e) => e.wdl_white).map((e) => ({ x: e.t, y: e.wdl_white![1] })),
+      },
+      {
+        name: "Black win",
+        color: "var(--series-2)",
+        points: g.evals.filter((e) => e.wdl_white).map((e) => ({ x: e.t, y: e.wdl_white![2] })),
+      },
+    ];
+
+    // Market legs ride the same axis on purpose: a price and a probability are the same unit, and
+    // the gap between them is the thing this project measures. Dashed, so engine and market are
+    // told apart by style rather than by a second scale.
+    m.legs.slice(0, LEG_COLORS.length).forEach((leg, i) => {
+      const pts = (m.series[leg] ?? []).filter((p) => p.ask !== null);
+      if (pts.length)
+        series.push({
+          name: `${leg} (market)`,
+          color: LEG_COLORS[i],
+          dashed: true,
+          points: pts.map((p) => ({ x: p.t, y: p.ask! })),
+        });
+    });
+
+    const rules: Rule[] = g.signals.map((s) => ({
+      x: s.t,
+      label: `${s.kind} ${moveOf(s.ply)}${s.san ?? ""}`,
+      tone: s.kind === "flip" ? "bad" : s.kind === "decisive" ? "warn" : "neutral",
+    }));
+
+    $("legend").innerHTML = series
+      .map(
+        (s) =>
+          `<span class="key" style="color:${s.color}">
+             <span class="swatch${s.dashed ? " dashed" : ""}"></span>${esc(s.name)}</span>`,
+      )
+      .join("");
+
+    drawChart($("chart"), {
+      series,
+      rules,
+      yDomain: [0, 1],
+      height: 300,
+      fmtY: (n) => n.toFixed(2),
+      fmtX: (n) => secs(n),
+      labelEnds: false,
+    });
+
+    $("chartnote").textContent =
+      `depth ${g.decision_depth ?? "all"} · ${g.evals.length} evaluations` +
+      (m.legs.length ? ` · market: ${m.legs.join(", ")}` : " · no market feed");
+
+    $("evaltable").innerHTML = g.evals.length
+      ? `<table><thead><tr><th class="num">t</th><th>Move</th><th class="num">Depth</th>
+         <th class="num">White</th><th class="num">Draw</th><th class="num">Black</th>
+         <th class="num">cp</th><th class="num">Only-move gap</th><th class="num">Search</th>
+         <th class="num">Lines</th></tr></thead><tbody>${g.evals
+           .map(
+             (e) =>
+               `<tr><td class="num">${secs(e.t)}</td><td class="mono">${esc(moveOf(e.ply))}</td>
+                <td class="num">${e.depth ?? "—"}</td>
+                <td class="num">${e.wdl_white ? pct(e.wdl_white[0]) : "—"}</td>
+                <td class="num">${e.wdl_white ? pct(e.wdl_white[1]) : "—"}</td>
+                <td class="num">${e.wdl_white ? pct(e.wdl_white[2]) : "—"}</td>
+                <td class="num">${e.mate_in !== null ? `#${e.mate_in}` : (e.cp_white ?? "—")}</td>
+                <td class="num">${e.only_move_gap_cp ?? "—"}</td>
+                <td class="num">${e.search_ms !== null ? `${e.search_ms}ms` : "—"}</td>
+                <td class="num">${e.lines}</td></tr>`,
+           )
+           .join("")}</tbody></table>`
+      : `<p class="empty">no evaluations for this game</p>`;
+  }
+
+  function renderSignals(g: GameDetail) {
+    $("signals").innerHTML = g.signals.length
+      ? `<table><thead><tr><th class="num">t</th><th>Move</th><th>Transition</th>
+         <th class="num">Room</th><th class="num">Conf</th><th>Position</th></tr></thead>
+         <tbody>${g.signals
+           .map(
+             (s) =>
+               `<tr><td class="num">${secs(s.t)}</td>
+                <td class="mono">${esc(moveOf(s.ply))} ${esc(s.san ?? "")}</td>
+                <td>${esc(s.kind)}: ${esc(s.before)} → ${esc(s.after)}</td>
+                <td class="num">${s.room === null ? "—" : price(s.room)}</td>
+                <td class="num">${price(s.confidence)}</td>
+                <td class="mono">${
+                  s.position
+                    ? `${esc(s.position.leg)} ${price(s.position.entry_price)}→${price(s.position.exit_price)} ${esc(s.position.exit_reason)} ${usd(s.position.pnl_usd)}`
+                    : "—"
+                }</td></tr>`,
+           )
+           .join("")}</tbody></table>`
+      : `<p class="empty">no signals in this game</p>`;
+  }
+
+  function renderChanges(g: GameDetail) {
+    $("changes").innerHTML = g.state_changes.length
+      ? `<table><thead><tr><th>Move</th><th>From</th><th>To</th><th>Signal</th></tr></thead>
+         <tbody>${g.state_changes
+           .map(
+             (c) =>
+               `<tr><td class="mono">${esc(moveOf(c.ply))}</td>
+                <td>${esc(stateLabel(c.from))}</td><td>${esc(stateLabel(c.to))}</td>
+                <td>${c.emitted ? "emitted" : '<span class="muted">suppressed</span>'}</td></tr>`,
+           )
+           .join("")}</tbody></table>`
+      : `<p class="empty">the state has not changed</p>`;
+  }
+
+  function renderPlies(g: GameDetail) {
+    $("plies").innerHTML = g.plies.length
+      ? `<table><thead><tr><th class="num">#</th><th>Move</th><th>UCI</th>
+         <th class="num">Move time (UTC)</th><th class="num">Seen at</th><th>FEN</th></tr></thead>
+         <tbody>${g.plies
+           .slice()
+           .reverse()
+           .map(
+             (p) =>
+               `<tr><td class="num">${esc(moveOf(p.ply))}</td><td class="mono">${esc(p.san ?? "")}</td>
+                <td class="mono muted">${esc(p.uci ?? "")}</td>
+                <td class="num">${clock(p.move_unix_ms)}</td>
+                <td class="num">${secs(p.t)}</td>
+                <td class="mono muted" style="font-size:.7rem">${esc(p.fen ?? "")}</td></tr>`,
+           )
+           .join("")}</tbody></table>`
+      : `<p class="empty">no moves for this game</p>`;
+  }
+
+  let busy = false;
+  async function refresh() {
+    if (!id) {
+      $("gid").textContent = "no game id";
+      $("meta").textContent = "open this page from the overview";
+      return;
+    }
+    if (busy) return;
+    busy = true;
+    try {
+      const [g, m] = await Promise.all([api.game(id, run), api.market(run)]);
+      conn(true, `live · rev ${g.revision}`);
+      $("gid").textContent = g.game_id;
+      const st = $("state");
+      st.className = `badge ${g.state ?? "level"}`;
+      st.lastElementChild!.textContent = stateLabel(g.state);
+      $("meta").textContent = `${g.plies.length} plies · depths ${g.depths.join(", ") || "none"}`;
+      renderChart(g, m);
+      renderSignals(g);
+      renderChanges(g);
+      renderPlies(g);
+    } catch (e) {
+      conn(false, "unreachable");
+      $("meta").textContent = e instanceof Error ? e.message : String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
+  $("toggle").addEventListener("click", () => {
+    const b = $("toggle");
+    const on = b.getAttribute("aria-pressed") === "true";
+    b.setAttribute("aria-pressed", String(!on));
+    $("evaltable").classList.toggle("hidden", on);
+  });
+
+  refresh();
+  watch(() => refresh());
+</script>

@@ -1,0 +1,186 @@
+"""API tests. Needs `pip install -r api/requirements.txt`; the analysis tests still need nothing.
+
+What is worth testing here is not FastAPI but the two things that would make the dashboard lie:
+the cache must not serve a stale log, and the API's numbers must equal the pipeline's.
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from analysis.config_defaults import PipelineConfig
+from analysis.observations import Record, read
+from analysis.pipeline import run
+from analysis.synth import generate
+from api.store import split_runs  # needs no FastAPI
+
+try:
+    from fastapi.testclient import TestClient
+
+    from api.main import create_app
+    from api.settings import Settings
+except ModuleNotFoundError:  # pragma: no cover - the analysis suite runs without FastAPI
+    TestClient = None
+
+
+def write_log(lines: list[str]) -> Path:
+    p = Path(tempfile.mkdtemp()) / "run.jsonl"
+    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return p
+
+
+@unittest.skipIf(TestClient is None, "fastapi not installed")
+class TestEndpoints(unittest.TestCase):
+    def setUp(self) -> None:
+        self.log = write_log(generate())
+        self.cfg = PipelineConfig(white_leg="white", black_leg="black")
+        self.client = TestClient(create_app(Settings(log_path=str(self.log), pipeline=self.cfg)))
+
+    def test_config_reports_what_the_server_was_given(self) -> None:
+        body = self.client.get("/api/config").json()
+        self.assertEqual(body["white_leg"], "white")
+        self.assertEqual(body["log_path"], str(self.log))
+        self.assertEqual(body["eval_depth"], 16)
+
+    def test_health_carries_the_pipeline_diagnoses(self) -> None:
+        body = self.client.get("/api/health").json()
+        records, _ = read(str(self.log))
+        self.assertEqual(body["report"], run(records, self.cfg).health.report().split("\n"))
+        self.assertFalse(body["log_missing"])
+
+    def test_games_rows_match_the_log(self) -> None:
+        games = self.client.get("/api/games").json()["games"]
+        self.assertTrue(games)
+        g = games[0]
+        self.assertEqual(g["plies"], len([r for r in read(str(self.log))[0] if r.source == "ply"]))
+        self.assertIn(g["state"], {"white_winning", "black_winning", "level", None})
+
+    def test_signals_equal_the_pipeline(self) -> None:
+        body = self.client.get("/api/signals").json()
+        records, _ = read(str(self.log))
+        res = run(records, self.cfg)
+        self.assertEqual(len(body["signals"]), len(res.signals))
+        self.assertAlmostEqual(body["pnl_usd"], round(res.pnl_usd, 4))
+        self.assertTrue(body["hypothetical"], "P&L must never be presented as realised")
+
+    def test_game_detail_and_404(self) -> None:
+        gid = self.client.get("/api/games").json()["games"][0]["game_id"]
+        body = self.client.get(f"/api/games/{gid}").json()
+        self.assertEqual(body["game_id"], gid)
+        self.assertTrue(body["plies"])
+        self.assertEqual(self.client.get("/api/games/not-a-game").status_code, 404)
+
+    def test_every_eval_point_has_both_clocks(self) -> None:
+        # Mixing the two axes is the mistake that silently ruins a latency figure, so the shape
+        # has to carry both rather than leave the client to guess which one it got.
+        gid = self.client.get("/api/games").json()["games"][0]["game_id"]
+        for p in self.client.get(f"/api/games/{gid}").json()["evals"]:
+            self.assertIn("t", p)
+            self.assertIn("ts", p)
+            self.assertGreater(p["ts"], 1_000_000_000, "ts is unix seconds")
+
+    def test_dashboard_is_one_consistent_revision(self) -> None:
+        body = self.client.get("/api/dashboard").json()
+        self.assertEqual(body["revision"], self.client.get("/api/revision").json()["revision"])
+        for key in ("config", "health", "games", "market", "signals", "recent"):
+            self.assertIn(key, body)
+
+    def test_a_missing_log_is_reported_not_raised(self) -> None:
+        client = TestClient(create_app(Settings(log_path="logs/does-not-exist.jsonl")))
+        body = client.get("/api/health").json()
+        self.assertTrue(body["log_missing"])
+        self.assertEqual(client.get("/api/games").json()["games"], [])
+
+
+@unittest.skipIf(TestClient is None, "fastapi not installed")
+class TestCaching(unittest.TestCase):
+    def test_appending_to_the_log_bumps_the_revision(self) -> None:
+        records = generate()
+        log = write_log(records[:40])
+        client = TestClient(create_app(Settings(log_path=str(log))))
+
+        first = client.get("/api/revision").json()
+        self.assertEqual(client.get("/api/revision").json()["revision"], first["revision"],
+                         "an unchanged log must not re-parse")
+
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(records[40:]) + "\n")
+
+        second = client.get("/api/revision").json()
+        self.assertGreater(second["revision"], first["revision"])
+        self.assertGreater(second["records"], first["records"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TestRunSplitting(unittest.TestCase):
+    """A log file is appended across restarts, and `mono_ms` restarts with the process."""
+
+    def rec(self, mono: int, wall: int) -> Record:
+        return Record(mono, wall, "note", {"source": "note", "message": "x"})
+
+    def test_a_single_run_is_one_slice(self) -> None:
+        rs = [self.rec(i * 1000, 1_000_000_000_000 + i * 1000) for i in range(5)]
+        self.assertEqual(split_runs(rs), [(0, 5)])
+
+    def test_a_monotonic_reset_starts_a_run(self) -> None:
+        rs = [self.rec(5000, 1_000_000_005_000), self.rec(10, 1_000_000_010_000)]
+        self.assertEqual(split_runs(rs), [(0, 1), (1, 2)])
+
+    def test_clocks_drifting_apart_starts_a_run(self) -> None:
+        # The giveaway for an appended restart: mono advanced 2s while the wall advanced 6 hours.
+        rs = [self.rec(1000, 1_000_000_001_000), self.rec(3000, 1_000_021_600_000)]
+        self.assertEqual(split_runs(rs), [(0, 1), (1, 2)])
+
+    def test_a_long_stall_is_not_a_new_run(self) -> None:
+        # Both clocks advance together through a stall, so it must stay one run.
+        rs = [self.rec(1000, 1_000_000_001_000), self.rec(601_000, 1_000_000_601_000)]
+        self.assertEqual(split_runs(rs), [(0, 2)])
+
+    def test_an_empty_log_has_no_runs(self) -> None:
+        self.assertEqual(split_runs([]), [])
+
+
+@unittest.skipIf(TestClient is None, "fastapi not installed")
+class TestRunSelection(unittest.TestCase):
+    def setUp(self) -> None:
+        old = generate()[:3]
+        new = generate()
+        shifted = []
+        for line in new:
+            o = json.loads(line)
+            o["wall_unix_ms"] += 6 * 3600 * 1000  # the restart, six hours later
+            shifted.append(json.dumps(o))
+        self.log = write_log(old + shifted)
+        self.client = TestClient(create_app(Settings(log_path=str(self.log))))
+
+    def test_the_newest_run_is_served_by_default(self) -> None:
+        runs = self.client.get("/api/runs").json()
+        self.assertEqual(len(runs["runs"]), 2)
+        self.assertEqual(runs["current"], 1)
+        self.assertEqual(self.client.get("/api/revision").json()["records"], runs["runs"][1]["records"])
+
+    def test_an_earlier_run_can_be_asked_for(self) -> None:
+        meta = self.client.get("/api/health?run=0").json()
+        self.assertEqual(meta["run_index"], 0)
+        self.assertEqual(meta["records"], 3)
+
+    def test_run_minus_one_is_the_whole_file(self) -> None:
+        meta = self.client.get("/api/health?run=-1").json()
+        self.assertEqual(meta["records"], meta["lines"])
+
+    def test_signals_and_evals_share_one_axis_inside_a_run(self) -> None:
+        # The bug this guards: a signal timed off the wall clock and an evaluation timed off the
+        # monotonic one land hours apart on the chart once a log spans a restart.
+        gid = self.client.get("/api/games").json()["games"][0]["game_id"]
+        body = self.client.get(f"/api/games/{gid}").json()
+        if not body["signals"] or not body["evals"]:
+            self.skipTest("the reference log produced no signal for this game")
+        span = max(e["t"] for e in body["evals"])
+        for s in body["signals"]:
+            self.assertLessEqual(s["t"], span + 1.0)

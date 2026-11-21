@@ -1,0 +1,283 @@
+---
+import Shell from "../layouts/Shell.astro";
+---
+
+<Shell title="Overview" subtitle="observation log">
+  <div
+    id="runbar"
+    class="hidden"
+    style="display:flex;gap:8px;align-items:center;margin:16px 0 0;font-size:.8rem"
+  >
+    <span class="muted">This log holds several process runs — durations are only valid inside one.</span>
+    <select class="btn" id="run"></select>
+  </div>
+
+  <section class="grid tiles" style="margin:16px 0" id="tiles"></section>
+
+  <section class="grid cols-2" style="margin-bottom:14px">
+    <div class="card">
+      <header><h2>Feed health</h2><span class="sub" id="healthsub"></span></header>
+      <pre class="diagnosis" id="health">loading…</pre>
+    </div>
+    <div class="card">
+      <header>
+        <h2>Market tape</h2>
+        <span class="sub">best bid / ask per leg, carried forward</span>
+      </header>
+      <div class="legend" id="marketlegend"></div>
+      <div class="chart" id="marketchart"></div>
+      <table id="markettable" style="margin-top:10px"></table>
+    </div>
+  </section>
+
+  <section class="card" style="margin-bottom:14px">
+    <header>
+      <h2>Games</h2><span class="sub" id="gamesub"></span>
+    </header>
+    <div class="grid cols-2" id="games"></div>
+  </section>
+
+  <section class="grid cols-2">
+    <div class="card">
+      <header>
+        <h2>Signals</h2>
+        <span class="sub">P&amp;L is hypothetical — computed from recorded prices</span>
+      </header>
+      <div id="signals"></div>
+    </div>
+    <div class="card">
+      <header><h2>Log tail</h2><span class="sub" id="feedsub"></span></header>
+      <div class="feed" id="feed"></div>
+    </div>
+  </section>
+</Shell>
+
+<script>
+  import { api, watch, type Dashboard, type GameRow } from "../lib/api";
+  import { drawChart, type Series } from "../lib/chart";
+  import { esc, moveOf, pct, price, secs, stateLabel, usd } from "../lib/format";
+
+  const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
+  const $ = (id: string) => document.getElementById(id)!;
+  const params = new URLSearchParams(location.search);
+  let run: number | null = params.has("run") ? Number(params.get("run")) : null;
+
+  const conn = (ok: boolean, text: string) => {
+    const c = $("conn");
+    c.className = `badge ${ok ? "good" : "bad"}`;
+    c.lastElementChild!.textContent = text;
+  };
+
+  const tile = (label: string, value: string, hint = "") =>
+    `<div class="card tile"><div class="label">${esc(label)}</div>
+     <div class="value">${value}</div><div class="hint">${esc(hint)}</div></div>`;
+
+  function renderTiles(d: Dashboard) {
+    const counts = d.health.counts;
+    $("tiles").innerHTML = [
+      tile("Records", String(d.records), `${d.lines} lines · rev ${d.revision}`),
+      tile("Span", secs(d.health.span_s), `depth ${d.config.eval_depth ?? "all"}`),
+      tile(
+        "Plies / evals",
+        `${counts.ply ?? 0} / ${counts.eval ?? 0}`,
+        `${counts.market ?? 0} market events`,
+      ),
+      tile(
+        "Signals",
+        String(d.signals.signals.length),
+        `${d.health.suppressed_by_cooldown} suppressed by cooldown`,
+      ),
+      tile(
+        "Hypothetical P&L",
+        usd(d.signals.pnl_usd),
+        `${d.signals.positions} positions · fees $${d.signals.fees_usd.toFixed(2)}`,
+      ),
+    ].join("");
+  }
+
+  function renderHealth(d: Dashboard) {
+    const lines = [...d.health.report];
+    if (d.health.schema_problem_count)
+      lines.push(`!! ${d.health.schema_problem_count} schema problem(s): ${d.health.schema_problems[0]}`);
+    if (d.health.ordering_problems.length)
+      lines.push(`!! ordering: ${d.health.ordering_problems[0]}`);
+    $("health").innerHTML = lines
+      .map((l) => {
+        const cls = l.startsWith("!!") ? "err" : l.startsWith("!") ? "warn" : "";
+        return cls ? `<span class="${cls}">${esc(l)}</span>` : esc(l);
+      })
+      .join("\n");
+    $("healthsub").textContent = d.missing ? `log not found: ${d.config.log_path}` : d.config.log_path;
+  }
+
+  function renderMarket(d: Dashboard) {
+    const legs = d.market.legs.slice(0, SERIES.length);
+    const series: Series[] = [];
+    legs.forEach((leg, i) => {
+      const pts = d.market.series[leg] ?? [];
+      series.push({
+        name: leg,
+        color: SERIES[i],
+        points: pts.filter((p) => p.ask !== null).map((p) => ({ x: p.t, y: p.ask! })),
+      });
+      series.push({
+        name: `${leg} bid`,
+        color: SERIES[i],
+        dashed: true,
+        points: pts.filter((p) => p.bid !== null).map((p) => ({ x: p.t, y: p.bid! })),
+      });
+    });
+    $("marketlegend").innerHTML = legs.length
+      ? legs
+          .map(
+            (leg, i) =>
+              `<span class="key" style="color:${SERIES[i]}"><span class="swatch"></span>${esc(leg)} ask</span>
+               <span class="key" style="color:${SERIES[i]}"><span class="swatch dashed"></span>${esc(leg)} bid</span>`,
+          )
+          .join("")
+      : "";
+    drawChart($("marketchart"), {
+      series,
+      yDomain: [0, 1],
+      height: 220,
+      fmtY: (n) => n.toFixed(2),
+      labelEnds: false,
+    });
+
+    const rows = Object.entries(d.market.last);
+    $("markettable").innerHTML = rows.length
+      ? `<thead><tr><th>Leg</th><th class="num">Bid</th><th class="num">Ask</th>
+         <th class="num">Mid</th><th class="num">Last seen</th></tr></thead><tbody>${rows
+           .map(
+             ([leg, p]) =>
+               `<tr><td class="mono">${esc(leg)}</td><td class="num">${price(p.bid)}</td>
+                <td class="num">${price(p.ask)}</td><td class="num">${price(p.mid)}</td>
+                <td class="num">${secs(p.t)}</td></tr>`,
+           )
+           .join("")}</tbody>`
+      : `<tbody><tr><td class="empty">no market records — pass --asset-id &lt;leg&gt;=&lt;id&gt; to the Rust</td></tr></tbody>`;
+  }
+
+  function gameCard(g: GameRow): string {
+    const w = g.wdl_white;
+    const bar = w
+      ? `<div class="wdlbar" title="white ${pct(w[0])} · draw ${pct(w[1])} · black ${pct(w[2])}">
+           <span style="flex:${w[0] || 0.001};background:var(--series-1)"></span>
+           <span style="flex:${w[1] || 0.001};background:var(--series-3)"></span>
+           <span style="flex:${w[2] || 0.001};background:var(--series-2)"></span>
+         </div>`
+      : `<div class="empty" style="padding:0">no evaluation yet</div>`;
+    return `<a class="card gamecard" href="/game?id=${encodeURIComponent(g.game_id)}">
+      <div class="row">
+        <span class="id">${esc(g.game_id)}</span>
+        <span class="badge ${g.state ?? "level"}"><span class="dot"></span>${esc(stateLabel(g.state))}</span>
+        <span class="muted mono" style="margin-left:auto">${esc(moveOf(g.last_ply))} ${esc(g.last_san ?? "")}</span>
+      </div>
+      ${bar}
+      <div class="row muted mono" style="font-size:.76rem">
+        <span>${g.plies} plies</span><span>${g.evals} evals</span>
+        <span>${g.signals} signals</span>
+        <span style="margin-left:auto">${g.signals ? usd(g.pnl_usd) : ""}</span>
+      </div>
+    </a>`;
+  }
+
+  function renderGames(d: Dashboard) {
+    $("gamesub").textContent = `${d.games.length} in the log`;
+    $("games").innerHTML = d.games.length
+      ? d.games.map(gameCard).join("")
+      : `<p class="empty">no games yet — no ply records in the log</p>`;
+  }
+
+  function renderSignals(d: Dashboard) {
+    const s = d.signals.signals;
+    $("signals").innerHTML = s.length
+      ? `<table><thead><tr><th class="num">t</th><th>Game</th><th>Move</th><th>Transition</th>
+         <th class="num">Room</th><th class="num">Find</th><th class="num">Conf</th><th>Position</th></tr></thead>
+         <tbody>${s
+           .map(
+             (x) =>
+               `<tr><td class="num">${secs(x.t)}</td><td class="mono">${esc(x.game_id ?? "—")}</td>
+                <td class="mono">${esc(moveOf(x.ply))} ${esc(x.san ?? "")}</td>
+                <td>${esc(x.kind)}: ${esc(x.before)} → ${esc(x.after)}</td>
+                <td class="num">${x.room === null ? "—" : price(x.room)}</td>
+                <td class="num">${price(x.findability)}</td>
+                <td class="num">${price(x.confidence)}</td>
+                <td class="mono">${
+                  x.position
+                    ? `${esc(x.position.leg)} ${price(x.position.entry_price)}→${price(x.position.exit_price)} ${esc(x.position.exit_reason)} ${usd(x.position.pnl_usd)}`
+                    : "—"
+                }</td></tr>`,
+           )
+           .join("")}</tbody></table>`
+      : `<p class="empty">no signals. A quiet game produces none, which is correct behaviour.</p>`;
+  }
+
+  function renderFeed(d: Dashboard) {
+    $("feedsub").textContent = `last ${d.recent.length}`;
+    $("feed").innerHTML = d.recent
+      .slice()
+      .reverse()
+      .map(
+        (r) =>
+          `<div><span class="at">${secs(r.t)}</span><span class="src">${esc(r.source)}</span>
+           <span>${esc(r.text)}</span></div>`,
+      )
+      .join("");
+  }
+
+  function renderRuns(d: Dashboard) {
+    const bar = $("runbar");
+    bar.classList.toggle("hidden", d.run_count < 2);
+    if (d.run_count < 2) return;
+    const sel = $("run") as HTMLSelectElement;
+    const want = String(d.run_index);
+    if (sel.options.length !== d.run_count || sel.value !== want) {
+      sel.innerHTML = d.runs
+        .map(
+          (r) =>
+            `<option value="${r.index}">run ${r.index + 1} — ${new Date(
+              r.started_unix * 1000,
+            ).toISOString().slice(0, 16).replace("T", " ")}Z · ${r.records} records · ${secs(r.span_s)}</option>`,
+        )
+        .join("");
+      sel.value = want;
+    }
+  }
+
+  ($("run") as HTMLSelectElement).addEventListener("change", (ev) => {
+    run = Number((ev.target as HTMLSelectElement).value);
+    const u = new URL(location.href);
+    u.searchParams.set("run", String(run));
+    history.replaceState(null, "", u);
+    refresh();
+  });
+
+  let busy = false;
+  async function refresh() {
+    if (busy) return;
+    busy = true;
+    try {
+      const d = await api.dashboard(80, run);
+      renderRuns(d);
+      conn(!d.missing, d.missing ? "log missing" : `live · rev ${d.revision}`);
+      renderTiles(d);
+      renderHealth(d);
+      renderMarket(d);
+      renderGames(d);
+      renderSignals(d);
+      renderFeed(d);
+    } catch (e) {
+      conn(false, "API unreachable");
+      $("health").textContent = `${e instanceof Error ? e.message : e}\n\nStart it with:  cd code && python -m api --log logs/run.jsonl`;
+    } finally {
+      busy = false;
+    }
+  }
+
+  refresh();
+  watch(() => refresh());
+  addEventListener("visibilitychange", () => {
+    if (!document.hidden) refresh();
+  });
+</script>
