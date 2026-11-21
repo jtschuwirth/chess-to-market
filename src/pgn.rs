@@ -1,6 +1,15 @@
 //! Splitting a broadcast round's PGN into games, and picking out the ones still being played.
 
+pub mod moves;
 pub mod stream;
+mod stream_positions;
+
+pub struct Position {
+    pub game_id: String,
+    pub ply: u32,
+    pub start_fen: Option<String>,
+    pub moves: Vec<String>,
+}
 
 /// One game inside a round's PGN. Borrows from the source text — no copying.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +60,11 @@ impl<'a> Game<'a> {
     pub fn board_key(&self) -> String {
         match self.id() {
             Some(id) => id.to_string(),
-            None => format!("{}|{}", self.white().unwrap_or("?"), self.black().unwrap_or("?")),
+            None => format!(
+                "{}|{}",
+                self.white().unwrap_or("?"),
+                self.black().unwrap_or("?")
+            ),
         }
     }
 
@@ -292,7 +305,11 @@ mod tests {
     fn take_unfinished_respects_the_limit() {
         assert_eq!(split(&take_unfinished(ROUND, 1)).len(), 1);
         assert_eq!(split(&take_unfinished(ROUND, 2)).len(), 2);
-        assert_eq!(split(&take_unfinished(ROUND, 99)).len(), 2, "only two are unfinished");
+        assert_eq!(
+            split(&take_unfinished(ROUND, 99)).len(),
+            2,
+            "only two are unfinished"
+        );
     }
 
     #[test]

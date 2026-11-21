@@ -5,6 +5,7 @@
 //! T-02 to T-04.
 
 use anyhow::Result;
+use chess_to_market::pgn::Position;
 use chess_to_market::Observation;
 use chess_to_market::cli::Cli;
 use chess_to_market::observation::Clock;
@@ -23,6 +24,8 @@ use tracing_subscriber::EnvFilter;
 /// surface much later as something that looks unrelated.
 const CHANNEL_DEPTH: usize = 1024;
 
+const POSITION_DEPTH: usize = 64;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -34,6 +37,7 @@ async fn main() -> Result<()> {
 
     let clock = Clock::new();
     let (tx, mut rx) = mpsc::channel::<Observation>(CHANNEL_DEPTH);
+    let (pos_tx, pos_rx) = mpsc::channel::<Position>(POSITION_DEPTH);
     let mut sink = JsonlSink::open(&cli.out).await?;
     let mut sources = JoinSet::new();
 
@@ -48,9 +52,10 @@ async fn main() -> Result<()> {
         info!("live mode");
         if let Some(round_id) = cli.round_id.clone() {
             let tx = tx.clone();
+            let pos_tx = pos_tx.clone();
             let stream = cli.stream;
             sources.spawn(async move {
-                sources::lichess::run(&round_id, clock, tx, stream).await?;
+                sources::lichess::run(&round_id, clock, tx, pos_tx, stream).await?;
                 Ok::<_, anyhow::Error>("lichess: finished".to_string())
             });
         } else {
@@ -72,7 +77,7 @@ async fn main() -> Result<()> {
             let (depth, multipv) = (cli.depth, cli.multipv);
             let tx = tx.clone();
             sources.spawn(async move {
-                sources::engine::run(&engine_path, depth, multipv, clock, tx).await?;
+                sources::engine::run(&engine_path, depth, multipv, clock, tx, pos_rx).await?;
                 Ok::<_, anyhow::Error>("engine: finished".to_string())
             });
         } else {
@@ -80,8 +85,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    // The loop below ends when every sender is gone, so this one must not linger.
+    // The loop below ends when every sender is gone, so these must not linger.
     drop(tx);
+    drop(pos_tx);
 
     // Each arm is independent: a source that fails or finishes does not end the run, and the log
     // keeps a Note saying what happened.

@@ -38,10 +38,14 @@
 //! kept for the log, not for decisions.
 
 use anyhow::Result;
-use std::path::Path;
-use tokio::sync::mpsc::Sender;
+use std::{path::Path, process::Stdio};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::process::Command;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tracing::info;
 
 use crate::observation::{Clock, Observation};
+use crate::pgn::Position;
 
 pub async fn run(
     engine_path: &Path,
@@ -49,12 +53,83 @@ pub async fn run(
     multipv: u32,
     clock: Clock,
     tx: Sender<Observation>,
+    mut pos_rx: Receiver<Position>,
 ) -> Result<()> {
-    let _ = tx
-        .send(clock.note(format!(
-            "engine: not implemented (T-04). path={} depth={depth} multipv={multipv}",
-            engine_path.display()
-        )))
-        .await;
+    info!("Starting engine");
+    let mut child = Command::new(engine_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+
+    let mut stdin = child.stdin.take().expect("piped");
+    let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
+
+    // handshake: uci -> uciok, setoption, isready -> readyok
+
+    // ---- per position ----
+    while let Some(pos) = pos_rx.recv().await {
+        stdin.write_all(uci_position(&pos).as_bytes()).await?;
+        stdin
+            .write_all(format!("go depth {depth}\n").as_bytes())
+            .await?;
+
+        while let Some(line) = lines.next_line().await? {
+            // collect `info depth …` lines at the depths you care about
+            if line.starts_with("bestmove") {
+                break;
+            }
+        }
+        // emit Eval observations via tx
+    }
     Ok(())
+}
+
+/// The UCI `position` command for a game state.
+fn uci_position(pos: &Position) -> String {
+    let base = match &pos.start_fen {
+        Some(fen) => format!("position fen {fen}"),
+        None => "position startpos".to_string(),
+    };
+    if pos.moves.is_empty() {
+        format!("{base}\n")
+    } else {
+        format!("{base} moves {}\n", pos.moves.join(" "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pos(start_fen: Option<&str>, moves: &[&str]) -> Position {
+        Position {
+            game_id: "g".into(),
+            ply: moves.len() as u32,
+            start_fen: start_fen.map(str::to_string),
+            moves: moves.iter().map(|m| m.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn startpos_with_moves() {
+        assert_eq!(
+            uci_position(&pos(None, &["e2e4", "e7e5"])),
+            "position startpos moves e2e4 e7e5\n"
+        );
+    }
+
+    #[test]
+    fn startpos_with_no_moves_omits_the_keyword() {
+        assert_eq!(uci_position(&pos(None, &[])), "position startpos\n");
+    }
+
+    #[test]
+    fn a_set_up_position_keeps_its_history() {
+        let fen = "8/8/8/4k3/8/8/4K3/8 w - - 0 1";
+        assert_eq!(
+            uci_position(&pos(Some(fen), &["e2e3"])),
+            format!("position fen {fen} moves e2e3\n")
+        );
+    }
 }

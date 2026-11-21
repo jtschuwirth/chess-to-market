@@ -9,6 +9,7 @@ use tracing::info;
 
 use crate::observation::{Clock, Observation};
 use crate::pgn;
+use crate::pgn::Position;
 use crate::pgn::stream::GameStream;
 
 async fn streaming_run(round_id: &str) -> Result<()> {
@@ -38,6 +39,7 @@ pub async fn run(
     round_id: &str,
     _clock: Clock,
     _tx: Sender<Observation>,
+    _pos_tx: Sender<Position>,
     stream_data: bool,
 ) -> Result<()> {
     let url: String = format!("https://lichess.org/api/broadcast/round/{}.pgn", round_id);

@@ -102,17 +102,14 @@ impl GameStream {
 }
 
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const URL: &str =
-        "https://lichess.org/broadcast/indywidualne-mistrzostwa-polski-do-20-lat-open/runda-2/3XeWaGk9";
+    const URL: &str = "https://lichess.org/broadcast/indywidualne-mistrzostwa-polski-do-20-lat-open/runda-2/3XeWaGk9";
 
     fn game(id: &str, moves: &str, result: &str) -> String {
         format!(
@@ -218,7 +215,11 @@ mod tests {
     fn all_four_result_tokens_terminate_a_frame() {
         for r in ["*", "1-0", "0-1", "1/2-1/2"] {
             let mut s = GameStream::new();
-            assert_eq!(s.push(game("x", "1. e4", r).as_bytes()).len(), 1, "result {r}");
+            assert_eq!(
+                s.push(game("x", "1. e4", r).as_bytes()).len(),
+                1,
+                "result {r}"
+            );
         }
     }
 
