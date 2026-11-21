@@ -1,40 +1,62 @@
-//! The Lichess broadcast PGN feed. **Ticket T-02 — not implemented.**
-//!
-//! # What you are building
-//!
-//! `GET https://lichess.org/api/stream/broadcast/round/{round_id}.pgn` — no authentication. The
-//! body never ends while the round is live: stream it with `reqwest`'s `bytes_stream()` rather than
-//! awaiting the whole response, or the program will sit there forever having consumed nothing.
-//!
-//! The endpoint **re-sends game PGN as it updates**, so chunks are not one-ply-at-a-time. The real
-//! work is deduplicating down to plies you have not seen before, which means holding per-game state
-//! — and deciding who owns it.
-//!
-//! Per new ply, send a [`Payload::Ply`](crate::Payload::Ply) with the SAN, the UCI move and the
-//! resulting FEN. SAN → UCI needs `shakmaty`, because `Nf3` does not say which knight moved;
-//! resolving that requires full legal-move generation for the position.
-//!
-//! Positions also go to the engine, over a separate channel — see `sources::engine`.
-//!
-//! Reconnection is not this source's job; supervision lives in the consumer loop (T-05).
-//!
-//! ```bash
-//! cargo add reqwest --no-default-features --features rustls-tls,stream
-//! cargo add futures-util shakmaty pgn-reader
-//! ```
-//!
-//! Adding `shakmaty` / `pgn-reader` makes this repo GPL-3.0. Add `LICENSE` in the same commit.
+//! The Lichess broadcast feed: a round snapshot, or the live stream of its games.
 
 use anyhow::Result;
+use reqwest::Response;
 use tokio::sync::mpsc::Sender;
+use tokio_stream::StreamExt;
+use tracing::error;
+use tracing::info;
 
 use crate::observation::{Clock, Observation};
+use crate::pgn;
+use crate::pgn::stream::GameStream;
 
-pub async fn run(round_id: &str, clock: Clock, tx: Sender<Observation>) -> Result<()> {
-    let _ = tx
-        .send(clock.note(format!(
-            "lichess: not implemented (T-02). round_id={round_id}"
-        )))
-        .await;
+async fn streaming_run(round_id: &str) -> Result<()> {
+    info!("Running streaming request mode");
+    let url: String = format!(
+        "https://lichess.org/api/stream/broadcast/round/{}.pgn",
+        round_id
+    );
+    let res: Response = reqwest::get(url).await?;
+    let stream = res.bytes_stream();
+    tokio::pin!(stream);
+
+    let mut games = GameStream::new();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        for id in games.push(&chunk) {
+            if let Some(pgn_text) = games.get(&id) {
+                println!("{}", pgn_text)
+            }
+        }
+    }
+    Ok(())
+}
+
+pub async fn run(
+    round_id: &str,
+    _clock: Clock,
+    _tx: Sender<Observation>,
+    stream_data: bool,
+) -> Result<()> {
+    let url: String = format!("https://lichess.org/api/broadcast/round/{}.pgn", round_id);
+    let res: Response = reqwest::get(url).await?;
+    let raw_games: String = res.error_for_status()?.text().await?;
+    let s = pgn::status(&raw_games);
+    info!(
+        "round {round_id}: {} games, {} finished, {} in play",
+        s.total, s.finished, s.in_progress
+    );
+
+    if stream_data {
+        match streaming_run(round_id).await {
+            Ok(()) => println!("Stream end"),
+            Err(e) => error!("lichess: {e:#}"),
+        }
+    } else {
+        let active_games: String = pgn::take_unfinished(&raw_games, 1);
+        println!("{active_games}")
+    };
     Ok(())
 }

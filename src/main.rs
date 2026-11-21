@@ -5,12 +5,12 @@
 //! T-02 to T-04.
 
 use anyhow::Result;
-use clap::Parser;
+use chess_to_market::Observation;
 use chess_to_market::cli::Cli;
 use chess_to_market::observation::Clock;
 use chess_to_market::sink::JsonlSink;
 use chess_to_market::sources;
-use chess_to_market::Observation;
+use clap::Parser;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::{error, info, warn};
@@ -48,8 +48,9 @@ async fn main() -> Result<()> {
         info!("live mode");
         if let Some(round_id) = cli.round_id.clone() {
             let tx = tx.clone();
+            let stream = cli.stream;
             sources.spawn(async move {
-                sources::lichess::run(&round_id, clock, tx).await?;
+                sources::lichess::run(&round_id, clock, tx, stream).await?;
                 Ok::<_, anyhow::Error>("lichess: finished".to_string())
             });
         } else {

@@ -34,6 +34,14 @@ pub struct Cli {
     #[arg(long, value_name = "ID")]
     pub round_id: Option<String>,
 
+    /// Follow the round live instead of taking a single snapshot.
+    ///
+    /// A presence flag: `--stream` is true, omitting it is false. That is clap's default for a
+    /// `bool` field (`ArgAction::SetTrue`), so it takes no value — `--stream true` would be an
+    /// error, with `true` read as a stray positional argument.
+    #[arg(long)]
+    pub stream: bool,
+
     /// Polymarket outcome, as `<leg>=<asset_id>`. Repeat once per outcome.
     ///
     /// Example: `--asset-id gukesh=7137… --asset-id draw=9922… --asset-id sindarov=1044…`

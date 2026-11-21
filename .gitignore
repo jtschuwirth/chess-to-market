@@ -8,6 +8,9 @@
 !data/*.jsonl
 !fixtures/*.jsonl
 
+# Editor
+.vscode/
+
 # Python
 __pycache__/
 *.py[cod]
