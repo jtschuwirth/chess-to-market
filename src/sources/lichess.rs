@@ -6,13 +6,14 @@ use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
 use tracing::error;
 use tracing::info;
+use tracing::warn;
 
 use crate::observation::{Clock, Observation};
 use crate::pgn;
 use crate::pgn::Position;
 use crate::pgn::stream::GameStream;
 
-async fn streaming_run(round_id: &str) -> Result<()> {
+async fn streaming_run(round_id: &str, pos_tx: Sender<Position>) -> Result<()> {
     info!("Running streaming request mode");
     let url: String = format!(
         "https://lichess.org/api/stream/broadcast/round/{}.pgn",
@@ -26,9 +27,10 @@ async fn streaming_run(round_id: &str) -> Result<()> {
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
-        for id in games.push(&chunk) {
-            if let Some(pgn_text) = games.get(&id) {
-                println!("{}", pgn_text)
+        for pos in games.push_live_positions(&chunk) {
+            if pos_tx.send(pos).await.is_err() {
+                warn!("lichess: engine channel closed, stopping position feed");
+                break;
             }
         }
     }
@@ -39,7 +41,7 @@ pub async fn run(
     round_id: &str,
     _clock: Clock,
     _tx: Sender<Observation>,
-    _pos_tx: Sender<Position>,
+    pos_tx: Sender<Position>,
     stream_data: bool,
 ) -> Result<()> {
     let url: String = format!("https://lichess.org/api/broadcast/round/{}.pgn", round_id);
@@ -52,7 +54,7 @@ pub async fn run(
     );
 
     if stream_data {
-        match streaming_run(round_id).await {
+        match streaming_run(round_id, pos_tx).await {
             Ok(()) => println!("Stream end"),
             Err(e) => error!("lichess: {e:#}"),
         }

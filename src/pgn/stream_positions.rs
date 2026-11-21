@@ -31,6 +31,35 @@ impl GameStream {
         let game = split(text).into_iter().next()?;
         to_position(&game, id).ok()
     }
+
+    /// Does this game have a result? `None` when the id is unknown.
+    pub fn is_finished(&self, id: &str) -> Option<bool> {
+        let text = self.get(id)?;
+        let game = split(text).into_iter().next()?;
+        Some(game.is_finished())
+    }
+
+    /// Like [`GameStream::push_positions`], but only for games still in play.
+    ///
+    /// A finished game keeps arriving on the stream — Lichess re-sends it with its result — and
+    /// evaluating a decided game is engine time spent on a position nobody will trade.
+    pub fn push_live_positions(&mut self, chunk: &[u8]) -> Vec<Position> {
+        let mut out = Vec::new();
+        for id in self.push(chunk) {
+            let Some(text) = self.get(&id) else { continue };
+            let Some(game) = split(text).into_iter().next() else {
+                continue;
+            };
+            if game.is_finished() {
+                continue;
+            }
+            match to_position(&game, &id) {
+                Ok(p) => out.push(p),
+                Err(e) => warn!("pgn: game {id} could not be replayed: {e:#}"),
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -80,6 +109,57 @@ mod tests {
         let p = s.position("zzz").unwrap();
         assert_eq!(p.moves, ["c2c4", "c7c5"]);
         assert!(s.position("nope").is_none());
+    }
+
+    fn finished_game(id: &str, moves: &str, result: &str) -> String {
+        format!(
+            "[Event \"e\"]\n[GameURL \"{URL}/{id}\"]\n[White \"A\"]\n[Black \"B\"]\n\
+             [Result \"{result}\"]\n\n{moves} {result}\n\n"
+        )
+    }
+
+    #[test]
+    fn is_finished_reports_the_result_state() {
+        let mut s = GameStream::new();
+        s.push(game("live", "1. e4").as_bytes());
+        s.push(finished_game("done", "1. e4 e5", "1-0").as_bytes());
+        assert_eq!(s.is_finished("live"), Some(false));
+        assert_eq!(s.is_finished("done"), Some(true));
+        assert_eq!(s.is_finished("missing"), None);
+    }
+
+    #[test]
+    fn live_positions_skip_decided_games() {
+        let mut s = GameStream::new();
+        let both = format!(
+            "{}{}",
+            game("live", "1. e4 e5"),
+            finished_game("done", "1. d4 d5", "1-0")
+        );
+        let ps = s.push_live_positions(both.as_bytes());
+        assert_eq!(ps.len(), 1, "the decided game is not worth evaluating");
+        assert_eq!(ps[0].game_id, "live");
+    }
+
+    #[test]
+    fn push_positions_still_returns_everything() {
+        // The filtering belongs to the caller's choice of method, not to the framing.
+        let mut s = GameStream::new();
+        let both = format!(
+            "{}{}",
+            game("live", "1. e4"),
+            finished_game("done", "1. d4", "0-1")
+        );
+        assert_eq!(s.push_positions(both.as_bytes()).len(), 2);
+    }
+
+    #[test]
+    fn a_game_that_ends_stops_producing_live_positions() {
+        let mut s = GameStream::new();
+        assert_eq!(s.push_live_positions(game("g", "1. e4").as_bytes()).len(), 1);
+        let done = finished_game("g", "1. e4 e5 2. Qh5 Nc6 3. Bc4 Nf6 4. Qxf7", "1-0");
+        assert!(s.push_live_positions(done.as_bytes()).is_empty());
+        assert_eq!(s.is_finished("g"), Some(true));
     }
 
     #[test]
