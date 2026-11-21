@@ -1,6 +1,6 @@
 //! The Lichess broadcast feed: a round snapshot, or the live stream of its games.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use reqwest::Response;
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
@@ -8,12 +8,28 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
-use crate::observation::{Clock, Observation};
+use crate::observation::{Clock, Observation, Payload};
 use crate::pgn;
 use crate::pgn::Position;
+use crate::pgn::clocks::{ClockReading, TimeControl};
 use crate::pgn::stream::GameStream;
 
-async fn streaming_run(round_id: &str, pos_tx: Sender<Position>) -> Result<()> {
+/// The round's scheduled start, which anchors every reconstructed move time.
+async fn round_starts_at_ms(round_id: &str) -> Result<u64> {
+    let url = format!("https://lichess.org/api/broadcast/-/-/{round_id}");
+    let body = reqwest::get(url).await?.error_for_status()?.text().await?;
+    let v: serde_json::Value = serde_json::from_str(&body)?;
+    v["round"]["startsAt"]
+        .as_u64()
+        .context("round metadata has no startsAt")
+}
+
+async fn streaming_run(
+    round_id: &str,
+    clock: Clock,
+    tx: Sender<Observation>,
+    pos_tx: Sender<Position>,
+) -> Result<()> {
     info!("Running streaming request mode");
     let url: String = format!(
         "https://lichess.org/api/stream/broadcast/round/{}.pgn",
@@ -23,24 +39,91 @@ async fn streaming_run(round_id: &str, pos_tx: Sender<Position>) -> Result<()> {
     let stream = res.bytes_stream();
     tokio::pin!(stream);
 
+    let starts_at_ms = round_starts_at_ms(round_id).await?;
+    let tc = TimeControl::default();
     let mut games = GameStream::new();
+    let _ = tx
+        .send(clock.note(format!(
+            "lichess: stream open, round {round_id}, startsAt {starts_at_ms},              increment {}s from move {}",
+            tc.increment_secs, tc.increment_from_move
+        )))
+        .await;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
-        for pos in games.push_live_positions(&chunk) {
-            if pos_tx.send(pos).await.is_err() {
-                warn!("lichess: engine channel closed, stopping position feed");
-                break;
+
+        for (id, fresh) in games.new_plies(&chunk) {
+            let times = move_times_for(&games, &id, starts_at_ms, tc);
+
+            for p in &fresh {
+                let move_unix_ms = times
+                    .get(p.ply as usize - 1)
+                    .copied()
+                    .unwrap_or(starts_at_ms);
+                let record = clock.stamp(Payload::Ply {
+                    game_id: id.clone(),
+                    ply: p.ply,
+                    san: p.san.clone(),
+                    uci: p.uci.clone(),
+                    fen: p.fen.clone(),
+                    move_unix_ms,
+                });
+                if tx.send(record).await.is_err() {
+                    warn!("lichess: log channel closed");
+                    return Ok(());
+                }
+            }
+
+            if games.is_finished(&id) == Some(false) {
+                if let Some(pos) = games.position(&id) {
+                    if pos_tx.send(pos).await.is_err() {
+                        warn!("lichess: engine channel closed, stopping position feed");
+                    }
+                }
             }
         }
     }
+    let _ = tx.send(clock.note("lichess: stream ended")).await;
     Ok(())
+}
+
+/// Reconstructed wall-clock time for every ply of a game, so a new ply can be looked up by index.
+///
+/// Elapsed time is cumulative, so this is computed over the whole game rather than the new plies.
+fn move_times_for(
+    games: &GameStream,
+    id: &str,
+    starts_at_ms: u64,
+    tc: TimeControl,
+) -> Vec<u64> {
+    let Some(text) = games.get(id) else {
+        return Vec::new();
+    };
+    let Some(game) = pgn::split(text).into_iter().next() else {
+        return Vec::new();
+    };
+    let all = pgn::moves::plies(&game);
+    let readings: Vec<ClockReading> = all
+        .iter()
+        .filter_map(|p| {
+            p.clk_secs.map(|clk_secs| ClockReading {
+                move_no: p.move_no,
+                white: p.white,
+                clk_secs,
+            })
+        })
+        .collect();
+    if readings.len() != all.len() {
+        return Vec::new();
+    }
+    let base = readings.first().map(|r| r.clk_secs).unwrap_or(0);
+    pgn::clocks::move_times_ms(&readings, starts_at_ms, tc, base)
 }
 
 pub async fn run(
     round_id: &str,
-    _clock: Clock,
-    _tx: Sender<Observation>,
+    clock: Clock,
+    tx: Sender<Observation>,
     pos_tx: Sender<Position>,
     stream_data: bool,
 ) -> Result<()> {
@@ -54,7 +137,7 @@ pub async fn run(
     );
 
     if stream_data {
-        match streaming_run(round_id, pos_tx).await {
+        match streaming_run(round_id, clock, tx, pos_tx).await {
             Ok(()) => println!("Stream end"),
             Err(e) => error!("lichess: {e:#}"),
         }

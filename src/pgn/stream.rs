@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use super::moves::PlyInfo;
 use super::Game;
 
 /// The result tokens that end a game's movetext.
@@ -22,6 +23,7 @@ pub struct GameStream {
     /// Bytes not yet forming a complete game.
     buf: Vec<u8>,
     games: HashMap<String, String>,
+    emitted: HashMap<String, usize>,
     /// Ids in the order first seen, so iteration is stable rather than hash order.
     order: Vec<String>,
 }
@@ -93,6 +95,32 @@ impl GameStream {
 
     pub fn is_empty(&self) -> bool {
         self.games.is_empty()
+    }
+
+    /// Plies seen for the first time, per game this chunk updated.
+    ///
+    /// The stream re-sends a game's whole PGN on every update, so a watermark per board is what
+    /// turns "here is the game again" into "here are the two new moves".
+    pub fn new_plies(&mut self, chunk: &[u8]) -> Vec<(String, Vec<PlyInfo>)> {
+        let ids = self.push(chunk);
+        let mut out = Vec::new();
+        let mut marks = Vec::new();
+        for id in ids {
+            let Some(text) = self.games.get(&id) else { continue };
+            let Some(game) = super::split(text).into_iter().next() else {
+                continue;
+            };
+            let all = super::moves::plies(&game);
+            let seen = self.emitted.get(&id).copied().unwrap_or(0);
+            if all.len() > seen {
+                marks.push((id.clone(), all.len()));
+                out.push((id, all[seen..].to_vec()));
+            }
+        }
+        for (id, n) in marks {
+            self.emitted.insert(id, n);
+        }
+        out
     }
 
     /// Bytes held back because they do not yet form a complete game. Useful when debugging a
@@ -238,6 +266,38 @@ mod tests {
         assert!(ids.is_empty(), "no result token yet, so no frame");
         assert_eq!(s.len(), 0);
         assert!(s.pending_bytes() > 0);
+    }
+
+    #[test]
+    fn new_plies_returns_only_what_is_new() {
+        let mut s = GameStream::new();
+        let first = s.new_plies(game("g", "1. e4 e5", "*").as_bytes());
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].1.len(), 2, "both plies are new the first time");
+
+        let second = s.new_plies(game("g", "1. e4 e5 2. Nf3", "*").as_bytes());
+        assert_eq!(second[0].1.len(), 1, "only the third ply");
+        assert_eq!(second[0].1[0].san, "Nf3");
+        assert_eq!(second[0].1[0].ply, 3);
+    }
+
+    #[test]
+    fn a_resent_game_with_no_new_moves_emits_nothing() {
+        // The stream re-sends a whole game on every update, including ones where nothing changed
+        // on this board.
+        let mut s = GameStream::new();
+        s.new_plies(game("g", "1. e4 e5", "*").as_bytes());
+        assert!(s.new_plies(game("g", "1. e4 e5", "*").as_bytes()).is_empty());
+    }
+
+    #[test]
+    fn each_board_has_its_own_watermark() {
+        let mut s = GameStream::new();
+        s.new_plies(game("a", "1. e4 e5", "*").as_bytes());
+        let b = s.new_plies(game("b", "1. d4", "*").as_bytes());
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].0, "b");
+        assert_eq!(b[0].1.len(), 1);
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use shakmaty::fen::Fen;
 use shakmaty::san::San;
-use shakmaty::{CastlingMode, Chess, Position as _};
+use shakmaty::{CastlingMode, Chess, EnPassantMode, Position as _};
 
 use super::{Game, Position};
 
@@ -115,6 +115,131 @@ pub fn to_position(game: &Game<'_>, game_id: impl Into<String>) -> Result<Positi
         start_fen: fen,
         moves,
     })
+}
+
+
+/// One ply, with everything a `Ply` record needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlyInfo {
+    /// 1-based half-move index.
+    pub ply: u32,
+    /// Move number, so 1 for both `1. e4` and `1... e5`.
+    pub move_no: u32,
+    pub white: bool,
+    pub san: String,
+    pub uci: String,
+    /// Position after the move.
+    pub fen: String,
+    /// Seconds left on the mover's clock, from `%clk`.
+    pub clk_secs: Option<u32>,
+}
+
+/// SAN tokens paired with the clock comment that follows each one.
+pub fn san_with_clocks(movetext: &str) -> Vec<(&str, Option<u32>)> {
+    let bytes = movetext.as_bytes();
+    let mut out: Vec<(&str, Option<u32>)> = Vec::new();
+    let mut i = 0usize;
+    let mut depth = 0usize;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => {
+                let start = i + 1;
+                while i < bytes.len() && bytes[i] != b'}' {
+                    i += 1;
+                }
+                let comment = &movetext[start..i.min(movetext.len())];
+                if depth == 0 {
+                    if let (Some(secs), Some(last)) = (parse_clk(comment), out.last_mut()) {
+                        if last.1.is_none() {
+                            last.1 = Some(secs);
+                        }
+                    }
+                }
+                i += 1;
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            b';' => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            c if c.is_ascii_whitespace() => i += 1,
+            _ => {
+                let start = i;
+                while i < bytes.len()
+                    && !bytes[i].is_ascii_whitespace()
+                    && !matches!(bytes[i], b'(' | b')' | b'{' | b'}' | b';')
+                {
+                    i += 1;
+                }
+                if depth == 0 {
+                    if let Some(tok) = clean_token(&movetext[start..i]) {
+                        out.push((tok, None));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `[%clk 1:59:51]` to seconds.
+fn parse_clk(comment: &str) -> Option<u32> {
+    let at = comment.find("%clk")? + 4;
+    let rest = comment[at..].trim_start();
+    let end = rest.find(']').unwrap_or(rest.len());
+    let mut secs = 0u32;
+    for part in rest[..end].trim().split(':') {
+        secs = secs * 60 + part.trim().parse::<u32>().ok()?;
+    }
+    Some(secs)
+}
+
+/// Replay a game into per-ply records.
+pub fn plies(game: &Game<'_>) -> Vec<PlyInfo> {
+    let fen = start_fen(game);
+    let mut board: Chess = match &fen {
+        Some(f) => match f
+            .parse::<Fen>()
+            .ok()
+            .and_then(|f| f.into_position(CastlingMode::Standard).ok())
+        {
+            Some(b) => b,
+            None => return Vec::new(),
+        },
+        None => Chess::default(),
+    };
+
+    let mut out = Vec::new();
+    for (idx, (tok, clk)) in san_with_clocks(game.movetext()).into_iter().enumerate() {
+        let Ok(san) = San::from_ascii(tok.as_bytes()) else {
+            break;
+        };
+        let Ok(mv) = san.to_move(&board) else {
+            break;
+        };
+        let uci = mv.to_uci(CastlingMode::Standard).to_string();
+        board.play_unchecked(&mv);
+        let ply = idx as u32 + 1;
+        out.push(PlyInfo {
+            ply,
+            move_no: ply.div_ceil(2),
+            white: ply % 2 == 1,
+            san: tok.to_string(),
+            uci,
+            fen: Fen::from_position(board.clone(), EnPassantMode::Legal).to_string(),
+            clk_secs: clk,
+        });
+    }
+    out
 }
 
 #[cfg(test)]
