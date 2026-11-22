@@ -39,14 +39,16 @@ import Shell from "../layouts/Shell.astro";
 </Shell>
 
 <script>
-  import { api, watch, type Dashboard, type GameRow } from "../lib/api";
+  import { api, ApiError, watch, type Dashboard, type GameRow } from "../lib/api";
   import { drawChart, type Series } from "../lib/chart";
+  import { recall, remember } from "../lib/lastlog";
   import { esc, moveOf, outcome, pct, price, secs, stateLabel, usd } from "../lib/format";
 
   const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
   const $ = (id: string) => document.getElementById(id)!;
   const params = new URLSearchParams(location.search);
-  let log: string | null = params.get("log");
+  // The URL wins, then whatever was last looked at, then the server's newest.
+  let log: string | null = params.get("log") ?? recall();
   const scope = () => ({ log });
 
   const setUrl = () => {
@@ -215,6 +217,7 @@ import Shell from "../layouts/Shell.astro";
 
   function renderPickers(d: Dashboard) {
     log = d.log;
+    remember(log);
     const events = d.logs;
     const current = events.find((e) => e.rounds.some((r) => r.path === log)) ?? events[0];
 
@@ -253,12 +256,27 @@ import Shell from "../layouts/Shell.astro";
 
 
   let latest: Dashboard | null = null;
+  /** A remembered log can be deleted between visits; fall back rather than showing an error. */
+  async function loadDashboard(): Promise<Dashboard> {
+    try {
+      return await api.dashboard(80, scope());
+    } catch (e) {
+      if (log && e instanceof ApiError) {
+        log = null;
+        remember(null);
+        setUrl();
+        return await api.dashboard(80, scope());
+      }
+      throw e;
+    }
+  }
+
   let busy = false;
   async function refresh() {
     if (busy) return;
     busy = true;
     try {
-      const d = await api.dashboard(80, scope());
+      const d = await loadDashboard();
       latest = d;
       renderPickers(d);
       conn(!d.missing, d.missing ? "log missing" : `live · rev ${d.revision}`);

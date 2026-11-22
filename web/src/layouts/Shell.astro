@@ -34,7 +34,7 @@ const { title, subtitle } = Astro.props;
         {subtitle && <span class="muted mono">{subtitle}</span>}
         <nav>
           <span class="badge" id="conn"><span class="dot"></span><span>connecting…</span></span>
-          <a class="btn" href="/">Overview</a>
+          <a class="btn" id="overviewlink" href="/">Overview</a>
           <button class="btn" id="theme" type="button">Theme</button>
         </nav>
       </div>

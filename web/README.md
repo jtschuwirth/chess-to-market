@@ -34,6 +34,11 @@ build time; the API already allows the dev origins and takes `--origin` for othe
 | `/` | Is every producer alive? Which games exist, who is winning, which are priced, what fired? |
 | `/game?id=<game_id>` | For one game: engine probabilities against market price over time, that game's market tape, our own processing latency, signals, state changes, and every move with its reconstructed time. |
 
+Which event you are looking at is carried in `?log=` and remembered in `localStorage`, so the
+Overview button returns to the event you came from and a fresh visit opens the one you looked at
+last rather than whichever file the server considers newest. A remembered log that has since been
+deleted falls back to the server's choice instead of erroring.
+
 Both poll `/api/events` (server-sent) and fall back to polling `/api/revision`. The revision changes
 only when the log grows, so an idle run costs one small request per tick.
 

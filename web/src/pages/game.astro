@@ -66,8 +66,9 @@ import Shell from "../layouts/Shell.astro";
 </Shell>
 
 <script>
-  import { api, watch, type GameDetail } from "../lib/api";
+  import { api, ApiError, watch, type GameDetail } from "../lib/api";
   import { drawChart, type Rule, type Series } from "../lib/chart";
+  import { linkWithLog, recall, remember } from "../lib/lastlog";
   import {
     clock,
     esc,
@@ -85,7 +86,7 @@ import Shell from "../layouts/Shell.astro";
   const params = new URLSearchParams(location.search);
   const id = params.get("id") ?? "";
   const run = params.has("run") ? Number(params.get("run")) : null;
-  const log = params.get("log");
+  let log = params.get("log") ?? recall();
   const scope = () => ({ log, run });
   const LEG_COLORS = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
 
@@ -353,7 +354,19 @@ import Shell from "../layouts/Shell.astro";
     if (busy) return;
     busy = true;
     try {
-      const g = await api.game(id, scope());
+      let g: GameDetail;
+      try {
+        g = await api.game(id, scope());
+      } catch (e) {
+        // The remembered log may be gone, or may not hold this game. Let the server choose.
+        if (!log || !(e instanceof ApiError)) throw e;
+        log = null;
+        remember(null);
+        g = await api.game(id, scope());
+      }
+      // Opened from a direct link: that game's event becomes the one to come back to.
+      remember(log);
+      linkWithLog("overviewlink", "/", log);
       conn(true, `live · rev ${g.revision}`);
       $("gid").textContent = g.title;
 
