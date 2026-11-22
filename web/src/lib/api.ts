@@ -227,13 +227,64 @@ export type GameDetail = GameInfo & {
 
 const BASE = import.meta.env.PUBLIC_API_BASE ?? "/api";
 
-export class ApiError extends Error {}
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status = 0,
+    readonly detail = "",
+  ) {
+    super(message);
+  }
+}
 
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { headers: { Accept: "application/json" } });
-  if (!res.ok) throw new ApiError(`${res.status} ${res.statusText} on ${path}`);
+export type ResolvedOutcome = { outcome: string; asset_id: string };
+
+export type ResolvedMarket = {
+  slug: string | null;
+  question: string | null;
+  active: boolean;
+  closed: boolean;
+  best_bid: number | null;
+  best_ask: number | null;
+  outcomes: ResolvedOutcome[];
+};
+
+export type Resolved = {
+  source: string;
+  slug: string;
+  event?: string;
+  markets: ResolvedMarket[];
+};
+
+export type ControlLeg = { leg: string; asset_id: string };
+
+export type ControlEntry = {
+  game_id: string;
+  enabled: boolean;
+  legs: ControlLeg[];
+  source?: string;
+};
+
+async function send<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { Accept: "application/json", ...(init?.body ? { "Content-Type": "application/json" } : {}) },
+    ...init,
+  });
+  if (!res.ok) {
+    // The API's `detail` is written for the operator — "no market slug found in …" beats a 422.
+    let detail = "";
+    try {
+      const body = await res.json();
+      detail = typeof body?.detail === "string" ? body.detail : "";
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(detail || `${res.status} ${res.statusText} on ${path}`, res.status, detail);
+  }
   return (await res.json()) as T;
 }
+
+const get = <T,>(path: string): Promise<T> => send<T>(path);
 
 /** Which log and which run a request is about. Both optional; the server has sensible defaults. */
 export type Scope = { log?: string | null };
@@ -257,6 +308,25 @@ export const api = {
       `/market${qs(scope, gameId ? { game_id: gameId } : {})}`,
     ),
   revision: (scope: Scope = {}) => get<Meta>(`/revision${qs(scope)}`),
+
+  // The only calls that write. They choose which public feeds the running tool subscribes to.
+  controlMarkets: (scope: Scope = {}) =>
+    get<{ log: string; control_file: string; markets: ControlEntry[] }>(`/markets${qs(scope)}`),
+  resolveMarket: (url: string) =>
+    get<Resolved>(`/markets/resolve?url=${encodeURIComponent(url)}`),
+  putMarket: (
+    gameId: string,
+    body: { legs: ControlLeg[]; enabled?: boolean; source?: string | null },
+    scope: Scope = {},
+  ) =>
+    send<{ markets: ControlEntry[] }>(`/markets/${encodeURIComponent(gameId)}${qs(scope)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  deleteMarket: (gameId: string, scope: Scope = {}) =>
+    send<{ markets: ControlEntry[] }>(`/markets/${encodeURIComponent(gameId)}${qs(scope)}`, {
+      method: "DELETE",
+    }),
 };
 
 /** Calls `onTick` when the log grows. Falls back to polling when SSE is unavailable. */

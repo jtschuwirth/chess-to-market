@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 from pathlib import Path
 
 from . import logs
+from . import markets as mk
 from . import projections as proj
 from .settings import Settings
 from .store import LogStore
@@ -70,15 +71,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="chess-to-market analysis API",
         description=(
             "Reads the observation log the Rust tool writes and serves what `analysis` makes of "
-            "it. Read-only: no endpoint places an order, holds a key or touches funds. Every "
-            "P&L figure is hypothetical, computed from recorded prices."
+            "it. Every P&L figure is hypothetical, computed from recorded prices. "
+            "The only endpoints that write anything are `/api/markets`, and all they write is one "
+            "local file naming **public market-data feeds to subscribe to**. No key is held, "
+            "nothing is signed, and no order is placed — the tool being steered has no ability "
+            "to place one."
         ),
         version="0.1.0",
     )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
-        allow_methods=["GET"],
+        allow_methods=["GET", "PUT", "DELETE"],
         allow_headers=["*"],
     )
     app.state.settings = settings
@@ -199,6 +203,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "recent": proj.recent(snap, recent_limit) if recent_limit else [],
             }
         )
+
+    @app.get("/api/markets", summary="Which markets the running tool is told to watch")
+    def get_markets(log: str | None = LOG) -> dict[str, Any]:
+        """The control file beside this log. The Rust re-reads it about once a second."""
+        chosen, _ = pick(log)
+        path = Path(settings.log_dir) / chosen if not Path(chosen).is_absolute() else Path(chosen)
+        return {
+            "log": chosen,
+            "control_file": mk.control_path(path).as_posix(),
+            "markets": mk.read_control(path),
+        }
+
+    @app.get("/api/markets/resolve", summary="A Polymarket link to its outcomes and asset ids")
+    def resolve_market(url: str = Query(description="A Polymarket link, or a market slug")) -> dict[str, Any]:
+        """The link is never fetched: a slug is taken from it and used against Polymarket's
+        public Gamma API, so a pasted URL cannot make this server reach an arbitrary host."""
+        try:
+            return mk.resolve(url)
+        except mk.ResolveError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except OSError as e:
+            raise HTTPException(status_code=502, detail=f"Polymarket is unreachable: {e}") from e
+
+    @app.put("/api/markets/{game_id}", summary="Watch, or stop watching, a game's market")
+    def put_market(game_id: str, body: mk.MarketIn, log: str | None = LOG) -> dict[str, Any]:
+        """Writes the control file. The running tool subscribes or unsubscribes on its open
+        connection within about a second; it does not restart and does not reconnect."""
+        chosen, _ = pick(log)
+        path = Path(settings.log_dir) / chosen if not Path(chosen).is_absolute() else Path(chosen)
+        entry = mk.Entry(
+            game_id=game_id,
+            enabled=body.enabled,
+            legs=[{"leg": l.leg, "asset_id": l.asset_id} for l in body.legs],
+            source=body.source,
+        )
+        return {"log": chosen, "markets": mk.upsert(path, entry)}
+
+    @app.delete("/api/markets/{game_id}", summary="Forget a game's market entirely")
+    def delete_market(game_id: str, log: str | None = LOG) -> dict[str, Any]:
+        """Removes the entry. To keep it but stop watching, PUT it with `enabled: false`."""
+        chosen, _ = pick(log)
+        path = Path(settings.log_dir) / chosen if not Path(chosen).is_absolute() else Path(chosen)
+        return {"log": chosen, "markets": mk.remove(path, game_id)}
 
     @app.get("/api/events", summary="Server-sent revision ticks")
     async def get_events(log: str | None = LOG) -> StreamingResponse:

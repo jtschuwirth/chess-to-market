@@ -30,6 +30,23 @@ import Shell from "../layouts/Shell.astro";
     <div class="legend" id="marketlegend"></div>
     <div class="chart" id="marketchart"></div>
     <table id="markettable" style="margin-top:10px"></table>
+
+    <div class="attach" id="attach">
+      <div class="row">
+        <input
+          id="mkurl"
+          class="btn"
+          type="text"
+          placeholder="Paste a Polymarket link for this game"
+          style="flex:1;min-width:220px"
+        />
+        <button class="btn" id="mkfind" type="button">Find</button>
+        <button class="btn hidden" id="mkoff" type="button">Stop watching</button>
+        <button class="btn hidden" id="mkforget" type="button">Forget</button>
+      </div>
+      <p class="muted" id="mkstatus" style="font-size:.78rem;margin:0"></p>
+      <div id="mkoutcomes"></div>
+    </div>
   </section>
 
   <section class="card" style="margin-bottom:14px">
@@ -67,7 +84,14 @@ import Shell from "../layouts/Shell.astro";
 </Shell>
 
 <script>
-  import { api, ApiError, watch, type GameDetail } from "../lib/api";
+  import {
+    api,
+    ApiError,
+    watch,
+    type ControlEntry,
+    type GameDetail,
+    type ResolvedMarket,
+  } from "../lib/api";
   import { drawChart, type Rule, type Series } from "../lib/chart";
   import { linkWithLog, recall, remember } from "../lib/lastlog";
   import {
@@ -270,6 +294,144 @@ import Shell from "../layouts/Shell.astro";
       : "best bid / ask per leg, carried forward";
   }
 
+  // --- attaching a market while the tool runs ---------------------------
+  // The API writes a control file; the running Rust re-reads it about once a second and
+  // subscribes or unsubscribes on its open socket. Nothing restarts.
+  const SIDES = ["white", "draw", "black", "—"];
+  let resolved: ResolvedMarket[] = [];
+  let control: ControlEntry[] = [];
+
+  const status = (text: string, bad = false) => {
+    const el = $("mkstatus");
+    el.textContent = text;
+    el.style.color = bad ? "var(--critical)" : "var(--text-muted)";
+  };
+
+  /** A first guess at which side an outcome is, so the common case is one click. */
+  function guessSide(outcome: string, question: string): string {
+    const o = outcome.toLowerCase();
+    if (o.includes("draw") || o.includes("tie")) return "draw";
+    const surname = (name: string | null) =>
+      (name ?? "").toLowerCase().split(",")[0].trim();
+    const white = surname(latestGame?.white ?? null);
+    const black = surname(latestGame?.black ?? null);
+    if (white && o.includes(white)) return "white";
+    if (black && o.includes(black)) return "black";
+    // A Yes/No market is about whichever player the question names.
+    if (o === "yes" || o === "no") {
+      const q = question.toLowerCase();
+      if (white && q.includes(white)) return o === "yes" ? "white" : "black";
+      if (black && q.includes(black)) return o === "yes" ? "black" : "white";
+    }
+    return "—";
+  }
+
+  function renderAttach() {
+    const mine = control.find((c) => c.game_id === id);
+    $("mkforget").classList.toggle("hidden", !mine);
+    $("mkoff").classList.toggle("hidden", !mine);
+    $("mkoff").textContent = mine && mine.enabled ? "Stop watching" : "Watch";
+
+    if (mine && !resolved.length) {
+      const legs = mine.legs.map((l) => l.leg).join(", ");
+      const src = mine.source ? ` · ${mine.source}` : "";
+      status(mine.enabled ? `watching ${legs}${src}` : `attached, not watching${src}`);
+    }
+
+    $("mkoutcomes").innerHTML = resolved.length
+      ? resolved
+          .map(
+            (m, mi) =>
+              `<div class="resolved"><div class="q">${esc(m.question ?? m.slug ?? "")}${
+                m.closed ? ' <span class="badge bad">closed</span>' : ""
+              }</div>${m.outcomes
+                .map(
+                  (o, oi) =>
+                    `<label class="outcome"><select class="btn" data-m="${mi}" data-o="${oi}">${SIDES.map(
+                      (sd) =>
+                        `<option value="${sd === "—" ? "" : sd}"${
+                          guessSide(o.outcome, m.question ?? "") === sd ? " selected" : ""
+                        }>${sd}</option>`,
+                    ).join("")}</select><span>${esc(o.outcome)}</span>` +
+                    `<span class="muted mono" style="margin-left:auto;font-size:.7rem">${esc(
+                      o.asset_id.slice(0, 10),
+                    )}…</span></label>`,
+                )
+                .join("")}</div>`,
+          )
+          .join("") + `<button class="btn" id="mkwatch" type="button">Watch this market</button>`
+      : "";
+
+    $("mkwatch")?.addEventListener("click", attach);
+  }
+
+  async function find() {
+    const url = ($("mkurl") as HTMLInputElement).value.trim();
+    if (!url) {
+      status("paste a Polymarket link first", true);
+      return;
+    }
+    status("looking it up…");
+    try {
+      const r = await api.resolveMarket(url);
+      resolved = r.markets.filter((m) => m.outcomes.length);
+      status(
+        resolved.length
+          ? `${r.event ?? r.slug} · ${resolved.length} market(s) — map each outcome to a side`
+          : "that link has no tradeable outcomes",
+        !resolved.length,
+      );
+    } catch (e) {
+      resolved = [];
+      status(e instanceof Error ? e.message : String(e), true);
+    }
+    renderAttach();
+  }
+
+  async function attach() {
+    const legs: { leg: string; asset_id: string }[] = [];
+    for (const sel of document.querySelectorAll<HTMLSelectElement>("#mkoutcomes select")) {
+      if (!sel.value) continue;
+      const m = resolved[Number(sel.dataset.m)];
+      legs.push({ leg: sel.value, asset_id: m.outcomes[Number(sel.dataset.o)].asset_id });
+    }
+    if (!legs.length) {
+      status("map at least one outcome to a side", true);
+      return;
+    }
+    try {
+      const source = ($("mkurl") as HTMLInputElement).value.trim();
+      control = (await api.putMarket(id, { legs, enabled: true, source }, scope())).markets;
+      resolved = [];
+      status(`watching ${legs.map((l) => l.leg).join(", ")} — subscribes within a second`);
+      renderAttach();
+      refresh();
+    } catch (e) {
+      status(e instanceof Error ? e.message : String(e), true);
+    }
+  }
+
+  $("mkfind").addEventListener("click", find);
+  $("mkurl").addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Enter") find();
+  });
+
+  $("mkoff").addEventListener("click", async () => {
+    const mine = control.find((c) => c.game_id === id);
+    if (!mine) return;
+    const body = { legs: mine.legs, enabled: !mine.enabled, source: mine.source };
+    control = (await api.putMarket(id, body, scope())).markets;
+    status(mine.enabled ? "stopped — unsubscribes within a second" : "watching again");
+    renderAttach();
+  });
+
+  $("mkforget").addEventListener("click", async () => {
+    control = (await api.deleteMarket(id, scope())).markets;
+    resolved = [];
+    status("removed");
+    renderAttach();
+  });
+
   function renderLatency(g: GameDetail) {
     const l = g.latency;
     const s = l.summary;
@@ -379,6 +541,7 @@ import Shell from "../layouts/Shell.astro";
       : `<p class="empty">no moves for this game</p>`;
   }
 
+  let latestGame: GameDetail | null = null;
   let busy = false;
   async function refresh() {
     if (!id) {
@@ -434,6 +597,13 @@ import Shell from "../layouts/Shell.astro";
       const link = $("lichess") as HTMLAnchorElement;
       link.classList.toggle("hidden", !g.url);
       if (g.url) link.href = g.url;
+      latestGame = g;
+      try {
+        control = (await api.controlMarkets(scope())).markets;
+      } catch {
+        control = [];
+      }
+      renderAttach();
       renderChart(g);
       renderMarket(g);
       renderLatency(g);

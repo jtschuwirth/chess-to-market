@@ -21,11 +21,17 @@ Flags mirror `python -m analysis`, so a dashboard and a `replay` pointed at the 
 same flags are guaranteed to agree: `--depth`, `--latency`, `--hold`, `--notional`, `--fee-rate`,
 `--white`, `--black`, `--resolved`, plus `--host`, `--port`, `--reload`, `--origin`.
 
-## Read-only, by construction
+## What it writes, and what it does not
 
-Every route is a `GET`. The server reads one local file, binds to localhost by default, holds no
-keys and places no orders. Settings are fixed at launch — no endpoint changes them. Every P&L figure
-is hypothetical, computed from recorded prices, and the payload says so (`"hypothetical": true`).
+Every route is a `GET` except `/api/markets`, and all those write is **one local file naming public
+market-data feeds to subscribe to**. No key is held, nothing is signed, and no order is placed — the
+tool being steered has no ability to place one. Settings are still fixed at launch; no endpoint
+changes them. Every P&L figure is hypothetical, computed from recorded prices, and the payload says
+so (`"hypothetical": true`).
+
+A pasted Polymarket link is **never fetched**. A slug is extracted from it and used against a fixed
+host (`gamma-api.polymarket.com`), so a URL from a browser cannot make this server reach an
+arbitrary address. A link to any other host is refused by name.
 
 ## Endpoints
 
@@ -41,12 +47,29 @@ is hypothetical, computed from recorded prices, and the payload says so (`"hypot
 | `/api/recent` | the raw tail |
 | `/api/runs` · `/api/config` | the process runs in the file · the settings in force |
 | `/api/logs` | every log on disk, grouped by event |
+| `/api/markets` | which markets the running tool is told to watch |
+| `/api/markets/resolve?url=` | a Polymarket link to its outcomes and asset ids |
+| `PUT /api/markets/{game_id}` | watch, or stop watching, a game's market |
+| `DELETE /api/markets/{game_id}` | forget it entirely |
 
 Most routes take `?log=<tournament>/<round>.jsonl`; the newest is the default, and every response
 says which log it answered from. There is no run parameter — the whole file is always served.
 
 `?log=` is the one place a request chooses a path, so only paths `/api/logs` already lists are
 accepted — which rules out traversal without having to reason about `..`.
+
+## Adding a market while the tool runs
+
+`PUT /api/markets/{game_id}` writes `<log stem>.markets.json` beside the round's log. The running
+Rust re-reads that file about once a second and subscribes or unsubscribes **on its open socket** —
+it does not restart and does not reconnect.
+
+The file is desired state, not commands, which is what makes it safe to write from a UI: a missed
+read converges on the next one, a restart picks up a market chosen while the tool was down, and
+"stop watching" is a field rather than a message that has to arrive. `enabled: false` keeps the
+entry so the dashboard can offer it again without re-resolving the link. The contract is
+`src/control.rs`; `api/markets.py` mirrors it, and `test_what_is_written_is_what_the_rust_reads`
+pins the shape.
 
 ## Markets are per game
 

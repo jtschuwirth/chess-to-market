@@ -60,6 +60,11 @@ made it look like noise. The `x: move` / `x: time` button switches, because read
 seconds is the whole point of the engine-against-market comparison; in move mode the market is
 placed at the fractional move its timestamp falls in.
 
+**A market is attached from the game page.** Paste a Polymarket link, press Find, map each outcome
+to `white` / `draw` / `black` (it guesses from the players' names), and press Watch. That writes a
+control file the running tool re-reads about once a second; it subscribes on its open socket without
+restarting. "Stop watching" unsubscribes and keeps the entry, "Forget" removes it.
+
 **Signal labels live in a band above the plot**, which the chart grows to fit, and stack into rows
 when two signals land close together. Inside the plot they drew behind the series and were
 unreadable. Their text uses a text token, never the border token the recessive rule line uses.

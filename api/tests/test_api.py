@@ -16,6 +16,7 @@ from analysis.observations import Record, read
 from analysis.pipeline import run
 from analysis.synth import generate
 from api import logs  # needs no FastAPI
+from api import markets as mk
 from api.store import split_runs
 
 try:
@@ -484,3 +485,133 @@ class TestMarketPerGame(unittest.TestCase):
         body = self.client.get("/api/market").json()
         self.assertIsNone(body["game_id"])
         self.assertTrue(body["legs"])
+
+
+class TestMarketLinks(unittest.TestCase):
+    """Turning what the operator pasted into asset ids, without fetching what they pasted."""
+
+    def test_a_link_yields_the_market_then_the_event(self) -> None:
+        # Most specific first: the last segment is usually the market, the one before it the event.
+        self.assertEqual(
+            mk.slugs_from("https://polymarket.com/event/wcc-2026/will-gukesh-win-game-1"),
+            ["will-gukesh-win-game-1", "wcc-2026"],
+        )
+
+    def test_a_bare_slug_works(self) -> None:
+        self.assertEqual(mk.slugs_from("will-gukesh-win-game-1"), ["will-gukesh-win-game-1"])
+
+    def test_another_host_is_refused(self) -> None:
+        # The slug is sent to a fixed host, but a link to somewhere else is a mistake worth naming
+        # rather than quietly searching Polymarket for its path.
+        with self.assertRaises(mk.ResolveError):
+            mk.slugs_from("https://evil.example.com/event/x")
+
+    def test_nothing_slug_shaped_is_refused(self) -> None:
+        for bad in ("", "   ", "!!!", "https://polymarket.com/"):
+            with self.assertRaises(mk.ResolveError):
+                mk.slugs_from(bad)
+
+    def test_outcomes_are_double_encoded_json(self) -> None:
+        # `outcomes` and `clobTokenIds` are JSON strings inside the JSON. Parse them twice.
+        out = mk._outcomes({"outcomes": '["Yes", "No"]', "clobTokenIds": '["111", "222"]'})
+        self.assertEqual(out, [{"outcome": "Yes", "asset_id": "111"}, {"outcome": "No", "asset_id": "222"}])
+
+    def test_an_outcome_with_no_token_is_dropped(self) -> None:
+        # It cannot be subscribed to, so offering it would be offering a button that does nothing.
+        out = mk._outcomes({"outcomes": '["Yes", "No"]', "clobTokenIds": '["111", ""]'})
+        self.assertEqual([o["outcome"] for o in out], ["Yes"])
+
+    def test_malformed_outcomes_are_empty_not_fatal(self) -> None:
+        self.assertEqual(mk._outcomes({"outcomes": "not json", "clobTokenIds": "[]"}), [])
+        self.assertEqual(mk._outcomes({}), [])
+
+
+class TestControlFile(unittest.TestCase):
+    """The file the Rust reads. Both sides must agree on its name and shape."""
+
+    def setUp(self) -> None:
+        self.log = Path(tempfile.mkdtemp()) / "round-5.jsonl"
+
+    def test_it_sits_beside_the_log(self) -> None:
+        # Mirrors `control::path_for` in the Rust; if these disagree nothing happens at all.
+        self.assertEqual(mk.control_path(self.log).name, "round-5.markets.json")
+        self.assertEqual(mk.control_path(self.log).parent, self.log.parent)
+
+    def test_a_missing_file_is_no_markets(self) -> None:
+        self.assertEqual(mk.read_control(self.log), [])
+
+    def test_upsert_adds_then_replaces(self) -> None:
+        legs = [{"leg": "white", "asset_id": "a1"}]
+        mk.upsert(self.log, mk.Entry("g1", True, legs, "a-link"))
+        mk.upsert(self.log, mk.Entry("g2", True, legs))
+        self.assertEqual([m["game_id"] for m in mk.read_control(self.log)], ["g1", "g2"])
+
+        mk.upsert(self.log, mk.Entry("g1", False, legs))
+        got = mk.read_control(self.log)
+        self.assertEqual([m["game_id"] for m in got], ["g1", "g2"], "order is stable")
+        self.assertFalse(got[0]["enabled"])
+
+    def test_disabling_keeps_the_entry(self) -> None:
+        # So the UI can offer a market it already resolved without pasting the link again.
+        legs = [{"leg": "white", "asset_id": "a1"}]
+        mk.upsert(self.log, mk.Entry("g1", False, legs, "a-link"))
+        got = mk.read_control(self.log)[0]
+        self.assertFalse(got["enabled"])
+        self.assertEqual(got["source"], "a-link")
+
+    def test_remove_takes_it_out(self) -> None:
+        mk.upsert(self.log, mk.Entry("g1", True, [{"leg": "white", "asset_id": "a1"}]))
+        self.assertEqual(mk.remove(self.log, "g1"), [])
+
+    def test_a_corrupt_file_reads_as_empty(self) -> None:
+        mk.control_path(self.log).parent.mkdir(parents=True, exist_ok=True)
+        mk.control_path(self.log).write_text("{not json", encoding="utf-8")
+        self.assertEqual(mk.read_control(self.log), [])
+
+    def test_the_write_is_atomic(self) -> None:
+        # The reader is another process polling the file; a rename means it never sees half of one.
+        mk.upsert(self.log, mk.Entry("g1", True, [{"leg": "white", "asset_id": "a1"}]))
+        self.assertFalse(mk.control_path(self.log).with_suffix(".json.tmp").exists())
+        json.loads(mk.control_path(self.log).read_text(encoding="utf-8"))
+
+
+@unittest.skipIf(TestClient is None, "fastapi not installed")
+class TestMarketEndpoints(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / "ev").mkdir()
+        self.log = self.root / "ev" / "round-1.jsonl"
+        self.log.write_text("\n".join(generate()) + "\n", encoding="utf-8")
+        self.client = TestClient(create_app(Settings(log_dir=str(self.root))))
+
+    def test_markets_start_empty_and_name_their_file(self) -> None:
+        body = self.client.get("/api/markets").json()
+        self.assertEqual(body["markets"], [])
+        self.assertTrue(body["control_file"].endswith("ev/round-1.markets.json"))
+
+    def test_a_market_can_be_added_then_disabled_then_removed(self) -> None:
+        legs = [{"leg": "white", "asset_id": "a1"}, {"leg": "black", "asset_id": "a2"}]
+        r = self.client.put("/api/markets/g1", json={"legs": legs, "source": "a-link"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["markets"][0]["game_id"], "g1")
+
+        r = self.client.put("/api/markets/g1", json={"legs": legs, "enabled": False})
+        self.assertFalse(r.json()["markets"][0]["enabled"])
+
+        self.assertEqual(self.client.delete("/api/markets/g1").json()["markets"], [])
+
+    def test_what_is_written_is_what_the_rust_reads(self) -> None:
+        # The shape is the contract. A field renamed on either side silently does nothing.
+        self.client.put(
+            "/api/markets/g1", json={"legs": [{"leg": "white", "asset_id": "a1"}]}
+        )
+        body = json.loads((self.root / "ev" / "round-1.markets.json").read_text(encoding="utf-8"))
+        self.assertEqual(
+            body,
+            {"markets": [{"game_id": "g1", "enabled": True, "legs": [{"leg": "white", "asset_id": "a1"}]}]},
+        )
+
+    def test_a_bad_link_is_a_422_not_a_crash(self) -> None:
+        r = self.client.get("/api/markets/resolve", params={"url": "https://evil.example.com/x"})
+        self.assertEqual(r.status_code, 422)
+        self.assertIn("not a Polymarket link", r.json()["detail"])
