@@ -31,15 +31,22 @@ async fn streaming_run(
     let stream = res.bytes_stream();
     tokio::pin!(stream);
 
-    let starts_at_ms = match meta {
-        Some(m) => m.starts_at_ms,
-        None => round_meta(round_id).await?.starts_at_ms,
+    let meta = match meta {
+        Some(m) => m,
+        None => round_meta(round_id).await?,
     };
-    let tc = TimeControl::default();
+    let starts_at_ms = meta.starts_at_ms;
+
+    // The round's stated control, when it stated one. A game carrying its own [TimeControl] header
+    // still overrides this per game — see `move_times_for`.
+    let (tc, tc_source) = match meta.time_control() {
+        Some(t) => (t, "round metadata"),
+        None => (TimeControl::default(), "assumed"),
+    };
     let mut games = GameStream::new();
     let _ = tx
         .send(clock.note(format!(
-            "lichess: stream open, round {round_id}, startsAt {starts_at_ms},              increment {}s from move {}",
+            "lichess: stream open, round {round_id}, startsAt {starts_at_ms}, increment {}s from move {} ({tc_source})",
             tc.increment_secs, tc.increment_from_move
         )))
         .await;
@@ -106,6 +113,13 @@ fn move_times_for(
     let Some(game) = pgn::split(text).into_iter().next() else {
         return Vec::new();
     };
+    // A game's own [TimeControl] header wins: it is per game and in the unambiguous PGN notation.
+    // Most relayed rounds have none, which is why the round's metadata is the fallback.
+    let tc = game
+        .tag("TimeControl")
+        .and_then(pgn::clocks::parse_time_control)
+        .unwrap_or(tc);
+
     let all = pgn::moves::plies(&game);
     let readings: Vec<ClockReading> = all
         .iter()

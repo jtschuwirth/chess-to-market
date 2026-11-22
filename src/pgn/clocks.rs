@@ -97,6 +97,70 @@ pub fn parse_time_control(tag: &str) -> Option<TimeControl> {
     })
 }
 
+/// Parse Lichess's free-text time control, from a broadcast's `tour.info.tc`.
+///
+/// Prose written by a tournament operator, not a format — `"90 min / 40 moves + 30 min + 30 sec /
+/// move"`, `"60m+30s"`, `"13 minutes + 2 sec / move"`. So this reads it the way a person does:
+/// take every `<number> <unit>` pair, and the **last** one measured in seconds is the increment,
+/// because that is where an increment is always written.
+///
+/// Unlike PGN's `40/7200:1800+30`, where the increment belongs to the second period, prose like
+/// `"+ 30 sec / move"` means every move from the first. Only an explicit `"starting 41"` or
+/// `"from move 41"` moves it, and operators do write that when they mean it.
+///
+/// A **delay** is not an increment — the clock does not gain the time — so it reconstructs as no
+/// increment at all rather than as a bonus that was never given.
+pub fn parse_info_tc(tc: &str) -> Option<TimeControl> {
+    let lower = tc.to_ascii_lowercase();
+    let bytes = lower.as_bytes();
+
+    let mut increment_secs: Option<u32> = None;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        let value: u32 = lower[start..i].parse().ok()?;
+        let unit_start = i + lower[i..].find(|c: char| !c.is_whitespace()).unwrap_or(0);
+        let unit: String = lower[unit_start..]
+            .chars()
+            .take_while(char::is_ascii_alphabetic)
+            .collect();
+        // "moves" before "min": both begin with m, and "40 moves" is not forty minutes.
+        if unit.starts_with("mov") || unit.starts_with("min") || unit == "m" || unit.is_empty() {
+            continue;
+        }
+        if unit.starts_with("sec") || unit == "s" {
+            increment_secs = Some(value);
+        }
+    }
+
+    let increment_secs = increment_secs?;
+    if lower.contains("delay") && !lower.contains("increment") {
+        return Some(TimeControl::NONE);
+    }
+
+    let increment_from_move = ["starting", "from move", "after move"]
+        .iter()
+        .find_map(|key| {
+            let at = lower.find(key)? + key.len();
+            let rest = lower[at..].trim_start();
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            digits.parse::<u32>().ok()
+        })
+        .unwrap_or(1);
+
+    Some(TimeControl {
+        increment_secs,
+        increment_from_move,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +258,73 @@ mod tests {
     fn a_control_without_an_increment_is_none() {
         assert_eq!(parse_time_control("40/7200"), None);
         assert_eq!(parse_time_control("-"), None);
+    }
+
+    /// Every one of these was read from a live Lichess broadcast's `tour.info.tc`.
+    #[test]
+    fn parses_the_formats_broadcasts_actually_use() {
+        let cases = [
+            ("90 min / 40 moves + 30 min + 30 sec / move", 30, 1),
+            ("120 min / 40 moves + 30 min / rest + 30 sec / move starting 41", 30, 41),
+            ("90 min + 30 sec / move", 30, 1),
+            ("90/40 + 30 min + 30 sec/move", 30, 1),
+            ("30 min + 10 sec / move", 10, 1),
+            ("60m+30s", 30, 1),
+            ("30 min + 3 sec / move", 3, 1),
+            ("13 minutes + 2 sec / move", 2, 1),
+            ("20 min + 10 sec / move", 10, 1),
+        ];
+        for (text, secs, from) in cases {
+            assert_eq!(
+                parse_info_tc(text),
+                Some(TimeControl {
+                    increment_secs: secs,
+                    increment_from_move: from
+                }),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn forty_moves_is_not_forty_minutes() {
+        // Both begin with "m". Reading "40 moves" as minutes would be silent and harmless-looking.
+        assert_eq!(parse_info_tc("90 min / 40 moves"), None, "no increment stated");
+    }
+
+    #[test]
+    fn prose_increments_start_at_move_one() {
+        // The difference from PGN notation: "40/7200:1800+30" gives the increment to the SECOND
+        // period, while "+ 30 sec / move" means every move. Getting this backwards costs 30s per
+        // move for the first forty moves of every reconstruction.
+        assert_eq!(parse_info_tc("90 min + 30 sec / move").unwrap().increment_from_move, 1);
+        assert_eq!(parse_time_control("40/5400:1800+30").unwrap().increment_from_move, 41);
+    }
+
+    #[test]
+    fn an_explicit_starting_move_is_honoured() {
+        for text in [
+            "90 min + 30 sec / move starting 41",
+            "90 min + 30 sec / move from move 41",
+            "90 min + 30 sec / move, after move 40",
+        ] {
+            let from = parse_info_tc(text).unwrap().increment_from_move;
+            assert!(from == 41 || from == 40, "{text} gave {from}");
+        }
+    }
+
+    #[test]
+    fn a_delay_is_not_an_increment() {
+        // With a delay the clock never gains the time, so counting it as a bonus would invent
+        // seconds that were never spent.
+        assert_eq!(parse_info_tc("90 min + 30 sec delay"), Some(TimeControl::NONE));
+    }
+
+    #[test]
+    fn text_with_no_time_control_in_it_is_none() {
+        for text in ["", "Classical", "standard", "-", "rapid and blitz"] {
+            assert_eq!(parse_info_tc(text), None, "{text}");
+        }
     }
 
     #[test]

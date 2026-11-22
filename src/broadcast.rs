@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::pgn::clocks::{parse_info_tc, TimeControl};
+
 /// What a round says about itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoundMeta {
@@ -22,6 +24,8 @@ pub struct RoundMeta {
     pub tour_name: String,
     /// Scheduled start, Unix milliseconds. Anchors every reconstructed move time.
     pub starts_at_ms: u64,
+    /// The operator's time control, verbatim, e.g. `"90 min / 40 moves + 30 min + 30 sec / move"`.
+    pub tc: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -48,6 +52,15 @@ struct TourPart {
     name: String,
     #[serde(default)]
     slug: String,
+    #[serde(default)]
+    info: TourInfo,
+}
+
+#[derive(Deserialize, Default)]
+struct TourInfo {
+    /// Free text, written by the tournament operator. `clocks::parse_info_tc` reads it.
+    #[serde(default)]
+    tc: Option<String>,
 }
 
 /// Keep what is safe in a path and recognisable to a human; drop the rest.
@@ -84,11 +97,24 @@ impl RoundMeta {
             .join(format!("{}.jsonl", safe(&self.round_slug, &self.round_id)))
     }
 
+    /// The time control, when the operator wrote one this parses.
+    ///
+    /// Most relayed rounds carry no `[TimeControl]` PGN header, so without this the move-time
+    /// reconstruction is guessing at the increment — and an increment is seconds per move, every
+    /// move, which compounds across a game.
+    pub fn time_control(&self) -> Option<TimeControl> {
+        self.tc.as_deref().and_then(parse_info_tc)
+    }
+
     /// One line naming this round, so a log says what it is without its filename.
     pub fn describe(&self) -> String {
         format!(
-            "lichess: {} · {} ({}), startsAt {}",
-            self.tour_name, self.round_name, self.round_id, self.starts_at_ms
+            "lichess: {} · {} ({}), startsAt {}, time control {}",
+            self.tour_name,
+            self.round_name,
+            self.round_id,
+            self.starts_at_ms,
+            self.tc.as_deref().unwrap_or("(not stated)")
         )
     }
 }
@@ -124,6 +150,7 @@ fn parse(body: &str, round_id: &str) -> Result<RoundMeta> {
         tour_slug: r.tour.slug,
         tour_name: r.tour.name,
         tour_id: r.tour.id,
+        tc: r.tour.info.tc.filter(|s| !s.trim().is_empty()),
     })
 }
 
@@ -136,7 +163,9 @@ mod tests {
       "round": {"id":"yRwFuCyK","name":"Round 5","slug":"round-5","ongoing":true,
                 "startsAt":1795295700000,"url":"https://lichess.org/broadcast/x/round-5/yRwFuCyK"},
       "tour": {"id":"wYvYFVtt","name":"FIDE World Junior Chess Championship 2026 | Open",
-               "slug":"fide-world-junior-chess-championship-2026-open","tier":4},
+               "slug":"fide-world-junior-chess-championship-2026-open","tier":4,
+               "info":{"format":"11-round Swiss","tc":"90 min / 40 moves + 30 min + 30 sec / move",
+                       "fideTC":"standard"}},
       "games": []
     }"#;
 
@@ -152,6 +181,31 @@ mod tests {
         assert_eq!(m.round_name, "Round 5");
         assert_eq!(m.tour_slug, "fide-world-junior-chess-championship-2026-open");
         assert_eq!(m.starts_at_ms, 1795295700000);
+    }
+
+    #[test]
+    fn the_time_control_comes_from_the_metadata() {
+        // This round's PGN has no [TimeControl] header, so without the metadata the increment was
+        // a guess — and a wrong one: 30s from move 41 instead of from move 1.
+        assert_eq!(
+            meta().time_control(),
+            Some(TimeControl {
+                increment_secs: 30,
+                increment_from_move: 1
+            })
+        );
+    }
+
+    #[test]
+    fn a_round_without_a_stated_control_has_none() {
+        let m = RoundMeta { tc: None, ..meta() };
+        assert_eq!(m.time_control(), None);
+    }
+
+    #[test]
+    fn describe_records_the_control_it_used() {
+        // The log has to say what the reconstruction assumed, or its move times cannot be checked.
+        assert!(meta().describe().contains("30 sec / move"));
     }
 
     #[test]

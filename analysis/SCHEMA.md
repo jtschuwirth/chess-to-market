@@ -53,7 +53,9 @@ dashboard checkable against the board a human can look at.
 ```
 
 `move_unix_ms` is the **reconstructed** wall-clock time of the move (`startsAt + Σ clock deltas`), not
-when the relay delivered it. That distinction is the whole measurement: arrival time would measure
+when the relay delivered it. The increment used comes from the game's own `[TimeControl]` header,
+else the round's stated control (`tour.info.tc`), else an assumption — and the run's opening note
+says which, because an increment is seconds per move, every move, and compounds across a game. That distinction is the whole measurement: arrival time would measure
 Lichess's lag, not the market's.
 
 `ply` counts half-moves from 1. One record per *newly seen* ply — re-sent plies emit nothing.
