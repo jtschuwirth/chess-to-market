@@ -25,6 +25,9 @@ export type ChartOpts = {
 const W = 760;
 const PAD = { t: 14, r: 56, b: 26, l: 40 };
 
+/** Height of one row of signal labels in the band above the plot. */
+const LABEL_ROW = 12;
+
 const svgEl = <K extends keyof SVGElementTagNameMap>(
   name: K,
   attrs: Record<string, string | number> = {},
@@ -72,7 +75,23 @@ export function drawChart(host: HTMLElement, o: ChartOpts): void {
   const yHi = y0 === y1 ? y1 + 0.5 : y1;
 
   const px = (x: number) => PAD.l + ((x - x0) / (x1 - x0)) * (W - PAD.l - PAD.r);
-  const py = (y: number) => H - PAD.b - ((y - yLo) / (yHi - yLo)) * (H - PAD.t - PAD.b);
+
+  // Signal labels get a band of their own above the plot. Drawn inside it they sit behind the
+  // series — which is where they were, and unreadable. Rows are assigned by how much horizontal
+  // room each label needs, so two signals a move apart stack rather than overprint.
+  const rules = (o.rules ?? []).filter((r) => r.x >= x0 && r.x <= x1);
+  const rowEnds: number[] = [];
+  const rowOf = rules.map((r) => {
+    const width = r.label.length * 5.4 + 10;
+    let row = 0;
+    while (rowEnds[row] !== undefined && rowEnds[row] > px(r.x)) row += 1;
+    rowEnds[row] = px(r.x) + width;
+    return row;
+  });
+
+  // Plus a little clearance, so the lowest row of text clears the top gridline.
+  const padT = PAD.t + rowEnds.length * LABEL_ROW + (rowEnds.length ? 4 : 0);
+  const py = (y: number) => H - PAD.b - ((y - yLo) / (yHi - yLo)) * (H - padT - PAD.b);
 
   const svg = svgEl("svg", {
     viewBox: `0 0 ${W} ${H}`,
@@ -119,19 +138,26 @@ export function drawChart(host: HTMLElement, o: ChartOpts): void {
   // Labels are stacked when their rules are close together, rather than drawn on top of each
   // other: two signals seconds apart is exactly when you most want to read both.
   const ruleRows: number[] = [];
-  for (const r of o.rules ?? []) {
-    if (r.x < x0 || r.x > x1) continue;
+  rules.forEach((r, i) => {
+    // The line may be recessive; its label may not. A border token as text is the reason the
+    // neutral labels looked hidden — text wears text tokens.
     const stroke =
-      r.tone === "bad" ? "var(--critical)" : r.tone === "warn" ? "var(--warning)" : "var(--border-strong)";
-    const labelWidth = r.label.length * 5.2;
-    let row = 0;
-    while (ruleRows[row] !== undefined && ruleRows[row] > px(r.x)) row += 1;
-    ruleRows[row] = px(r.x) + labelWidth;
+      r.tone === "bad"
+        ? "var(--critical)"
+        : r.tone === "warn"
+          ? "var(--warning)"
+          : "var(--border-strong)";
+    const ink =
+      r.tone === "bad"
+        ? "var(--critical)"
+        : r.tone === "warn"
+          ? "var(--warning)"
+          : "var(--text-secondary)";
     svg.append(
       svgEl("line", {
         x1: px(r.x),
         x2: px(r.x),
-        y1: PAD.t,
+        y1: padT - 2,
         y2: H - PAD.b,
         stroke,
         "stroke-width": 1.5,
@@ -140,13 +166,14 @@ export function drawChart(host: HTMLElement, o: ChartOpts): void {
     );
     const t = svgEl("text", {
       x: px(r.x) + 4,
-      y: PAD.t + 9 + row * 11,
-      fill: stroke,
+      // Above the plot: the band is [0, padT), so nothing can draw over it.
+      y: PAD.t + (rowOf[i] + 1) * LABEL_ROW - 4,
+      fill: ink,
       "font-size": 9.5,
     });
     t.textContent = r.label;
     svg.append(t);
-  }
+  });
 
   for (const s of o.series) {
     if (!s.points.length) continue;
@@ -191,7 +218,7 @@ export function drawChart(host: HTMLElement, o: ChartOpts): void {
   }
 
   const cross = svgEl("line", {
-    y1: PAD.t,
+    y1: padT,
     y2: H - PAD.b,
     stroke: "var(--border-strong)",
     "stroke-width": 1,

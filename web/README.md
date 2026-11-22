@@ -60,6 +60,10 @@ made it look like noise. The `x: move` / `x: time` button switches, because read
 seconds is the whole point of the engine-against-market comparison; in move mode the market is
 placed at the fractional move its timestamp falls in.
 
+**Signal labels live in a band above the plot**, which the chart grows to fit, and stack into rows
+when two signals land close together. Inside the plot they drew behind the series and were
+unreadable. Their text uses a text token, never the border token the recessive rule line uses.
+
 **The old note, still true of the time axis:** A log file is appended across restarts,
 so `mono_ms` restarts inside it. The API splits the file into runs and serves the newest; the
 selector appears only when a file holds more than one. See `api/store.py`.
