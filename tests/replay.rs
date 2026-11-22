@@ -11,6 +11,7 @@ use chess_to_market::Payload;
 
 fn source_tag(p: &Payload) -> &'static str {
     match p {
+        Payload::Game { .. } => "game",
         Payload::Ply { .. } => "ply",
         Payload::Market { .. } => "market",
         Payload::Eval { .. } => "eval",

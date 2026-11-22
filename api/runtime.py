@@ -11,8 +11,7 @@ import json
 import os
 
 from .main import create_app
-
-ENV_VAR = "C2M_API_ARGS"
+from .settings import ENV_VAR
 
 
 def _settings():

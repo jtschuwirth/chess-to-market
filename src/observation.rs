@@ -45,6 +45,38 @@ pub struct Line {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum Payload {
+    /// Who is playing, and how the game ended. Straight from the PGN headers.
+    ///
+    /// Emitted when a game is first seen and again whenever `result` changes, so a finish lands in
+    /// the log the moment the relay reports it. `result` is the only honest end-of-game signal:
+    /// decisive games between titled players end in resignations, so the last position is not mate.
+    Game {
+        game_id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        white: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        black: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        white_elo: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        black_elo: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        white_title: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        black_title: Option<String>,
+        /// `*` while in play, then `1-0`, `0-1` or `1/2-1/2`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        result: Option<String>,
+        /// Board number within the round, e.g. `5.2`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        board: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event: Option<String>,
+        /// The `GameURL` header verbatim — never constructed. A wrong link is worse than none.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+    },
+
     /// A newly seen ply from the Lichess broadcast stream. Produced by `sources::lichess` (T-02).
     Ply {
         game_id: String,
@@ -166,5 +198,46 @@ impl Clock {
 impl Default for Clock {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// So a stream's headers become a record without the call site restating every field.
+impl From<crate::pgn::info::GameInfo> for Payload {
+    fn from(i: crate::pgn::info::GameInfo) -> Self {
+        Payload::Game {
+            game_id: i.game_id,
+            white: i.white,
+            black: i.black,
+            white_elo: i.white_elo,
+            black_elo: i.black_elo,
+            white_title: i.white_title,
+            black_title: i.black_title,
+            result: i.result,
+            board: i.board,
+            event: i.event,
+            url: i.url,
+        }
+    }
+}
+
+#[cfg(test)]
+mod game_record_tests {
+    use super::*;
+    use crate::pgn::{info::info, split};
+
+    #[test]
+    fn a_games_headers_serialise_as_the_schema_says() {
+        let text = "[Event \"e\"]\n[Round \"5.2\"]\n[White \"A, B\"]\n[Black \"C, D\"]\n\
+                    [Result \"1-0\"]\n[WhiteElo \"2472\"]\n\
+                    [GameURL \"https://lichess.org/broadcast/t/r/yRwFuCyK/MUkIEXlH\"]\n\n1. e4 1-0\n\n";
+        let payload: Payload = info(&split(text)[0]).into();
+        let v: serde_json::Value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(v["source"], "game");
+        assert_eq!(v["game_id"], "MUkIEXlH");
+        assert_eq!(v["white"], "A, B");
+        assert_eq!(v["white_elo"], 2472);
+        assert_eq!(v["result"], "1-0");
+        // Absent is absent: a null here would be a field the analysis has to special-case.
+        assert!(v.get("black_elo").is_none());
     }
 }

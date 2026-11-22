@@ -24,6 +24,8 @@ pub struct GameStream {
     buf: Vec<u8>,
     games: HashMap<String, String>,
     emitted: HashMap<String, usize>,
+    /// Last headers reported per game, so names are not repeated on every move.
+    pub(super) infos: HashMap<String, super::info::GameInfo>,
     /// Ids in the order first seen, so iteration is stable rather than hash order.
     order: Vec<String>,
 }

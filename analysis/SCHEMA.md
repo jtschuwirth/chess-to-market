@@ -18,6 +18,32 @@ fields without breaking the Python mid-match.
 
 ---
 
+## `game` — who is playing, and how it ended (T-02)
+
+```json
+{"source": "game", "game_id": "MUkIEXlH",
+ "white": "Prraneeth Vuppala", "black": "Vaz, Ethan",
+ "white_elo": 2472, "black_elo": 2511, "white_title": "GM", "black_title": "IM",
+ "result": "*", "board": "5.1",
+ "event": "FIDE World Junior Chess Championship 2026 | Open",
+ "url": "https://lichess.org/broadcast/fide-world-junior-chess-championship-2026-open/round-5/yRwFuCyK/MUkIEXlH"}
+```
+
+Straight out of the PGN headers, which carry all of it: `White`, `Black`, `WhiteElo`, `BlackElo`,
+`WhiteTitle`, `BlackTitle`, `Result`, `Round`, `BroadcastName`, `GameURL`.
+
+`result` is the PGN result token — `*` while the game is in play, then `1-0`, `0-1` or `1/2-1/2`.
+**That token is the only honest way to know a game ended.** Most decisive games between titled
+players end in a resignation, so the final position is not mate and nothing on the board says the
+game is over; "stopped producing plies" is indistinguishable from a long think.
+
+Emit one **when a game is first seen**, and again **whenever `result` changes** — so a finish lands
+in the log the moment the relay reports it. Everything except `game_id` is optional: a relay with
+thin headers should produce a record with what it has rather than none at all.
+
+`url` is the `GameURL` header verbatim, never constructed. It is what makes a number on the
+dashboard checkable against the board a human can look at.
+
 ## `ply` — a newly seen move (T-02)
 
 ```json
@@ -92,6 +118,24 @@ Source start, death, reconnect, dropped stale positions, cooldown suppressions. 
 must be explainable afterwards**, or the lag figures around them cannot be trusted.
 
 ---
+
+## `game` — Rust status: helper ready, **not yet emitted** (21 Nov 2026)
+
+`Payload::Game` exists in `src/observation.rs`, `pgn::info::info()` reads the headers, and
+`GameStream::new_infos()` returns only what is new or changed. What is missing is the call site in
+`sources::lichess::streaming_run`, next to the `new_plies` loop:
+
+```rust
+for i in games.new_infos(&chunk) {
+    if tx.send(clock.stamp(i.into())).await.is_err() {
+        warn!("lichess: log channel closed");
+        return Ok(());
+    }
+}
+```
+
+Until that lands, the dashboard falls back to the game id and says "finished: unknown" rather than
+guessing.
 
 ## Rust status: ✅ applied (12 Nov 2026)
 

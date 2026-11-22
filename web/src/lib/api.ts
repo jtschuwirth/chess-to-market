@@ -36,7 +36,25 @@ export type Health = {
   notes: string[];
 };
 
-export type GameRow = {
+/** Headers from the PGN. All optional: the log may carry no `game` record yet. */
+export type GameInfo = {
+  title: string;
+  white: string | null;
+  black: string | null;
+  white_elo: number | null;
+  black_elo: number | null;
+  white_title: string | null;
+  black_title: string | null;
+  result: string | null;
+  /** `null` means nobody told us, which is not the same as "still in play". */
+  finished: boolean | null;
+  winner: "white" | "black" | "draw" | null;
+  board: string | null;
+  event: string | null;
+  url: string | null;
+};
+
+export type GameRow = GameInfo & {
   game_id: string;
   plies: number;
   evals: number;
@@ -149,7 +167,7 @@ export type Dashboard = Meta & {
   recent: FeedRow[];
 };
 
-export type GameDetail = {
+export type GameDetail = GameInfo & {
   revision: number;
   game_id: string;
   state: string | null;

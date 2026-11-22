@@ -1,4 +1,6 @@
 /target
+# A second target dir, for running tests while a live run holds the binary open.
+/target-check
 **/*.rs.bk
 
 # Recorded feed logs are large and mostly noise. The ONE log that backs the

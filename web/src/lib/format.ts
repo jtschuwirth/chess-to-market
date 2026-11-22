@@ -45,3 +45,25 @@ export const esc = (s: unknown): string =>
     /[&<>"']/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
   );
+
+/** "GM Ding, Liren (2728)" — whatever parts the headers actually carried. */
+export const player = (
+  name: string | null,
+  title: string | null,
+  elo: number | null,
+): string => {
+  if (!name) return "—";
+  return [title, name, elo ? `(${elo})` : ""].filter(Boolean).join(" ");
+};
+
+/** How the game ended, in words. `null` when the log has not said. */
+export const outcome = (
+  result: string | null,
+  winner: string | null,
+): string | null => {
+  if (!result || result === "*") return null;
+  if (winner === "draw") return `${result} · draw`;
+  if (winner === "white") return `${result} · White won`;
+  if (winner === "black") return `${result} · Black won`;
+  return result;
+};

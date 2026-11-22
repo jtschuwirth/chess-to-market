@@ -1,6 +1,7 @@
 //! Splitting a broadcast round's PGN into games, and picking out the ones still being played.
 
 pub mod clocks;
+pub mod info;
 pub mod moves;
 pub mod stream;
 mod stream_positions;

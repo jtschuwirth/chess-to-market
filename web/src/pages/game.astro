@@ -5,13 +5,16 @@ import Shell from "../layouts/Shell.astro";
 <Shell title="Game" subtitle="engine vs market">
   <section class="card" style="margin:16px 0">
     <header>
-      <h2 id="gid" class="mono">game</h2>
+      <h2 id="gid">game</h2>
       <span class="badge" id="state"><span class="dot"></span><span>—</span></span>
       <span class="sub" id="meta"></span>
+      <a class="btn hidden" id="lichess" target="_blank" rel="noopener noreferrer"
+        >Open on Lichess ↗</a
+      >
     </header>
     <div class="legend" id="legend"></div>
     <div class="chart" id="chart"></div>
-    <div class="row" style="display:flex;gap:8px;margin-top:10px">
+    <div class="row" style="display:flex;gap:8px;margin-top:10px;align-items:center">
       <button class="btn" id="toggle" type="button" aria-pressed="false">Table view</button>
       <span class="muted" style="font-size:.78rem" id="chartnote"></span>
     </div>
@@ -44,7 +47,18 @@ import Shell from "../layouts/Shell.astro";
 <script>
   import { api, watch, type GameDetail, type Market } from "../lib/api";
   import { drawChart, type Rule, type Series } from "../lib/chart";
-  import { clock, esc, moveOf, pct, price, secs, stateLabel, usd } from "../lib/format";
+  import {
+    clock,
+    esc,
+    moveOf,
+    outcome,
+    pct,
+    player,
+    price,
+    secs,
+    stateLabel,
+    usd,
+  } from "../lib/format";
 
   const $ = (id: string) => document.getElementById(id)!;
   const params = new URLSearchParams(location.search);
@@ -207,11 +221,37 @@ import Shell from "../layouts/Shell.astro";
     try {
       const [g, m] = await Promise.all([api.game(id, run), api.market(run)]);
       conn(true, `live · rev ${g.revision}`);
-      $("gid").textContent = g.game_id;
+      $("gid").textContent = g.title;
+
+      const ended = outcome(g.result, g.winner);
       const st = $("state");
-      st.className = `badge ${g.state ?? "level"}`;
-      st.lastElementChild!.textContent = stateLabel(g.state);
-      $("meta").textContent = `${g.plies.length} plies · depths ${g.depths.join(", ") || "none"}`;
+      st.className = `badge ${
+        ended
+          ? g.winner === "white"
+            ? "white_winning"
+            : g.winner === "black"
+              ? "black_winning"
+              : "level"
+          : (g.state ?? "level")
+      }`;
+      st.lastElementChild!.textContent = ended ?? stateLabel(g.state);
+
+      $("meta").textContent = [
+        g.white ? `${player(g.white, g.white_title, g.white_elo)} vs ${player(g.black, g.black_title, g.black_elo)}` : null,
+        g.event,
+        g.board ? `board ${g.board}` : null,
+        g.game_id,
+        `${g.plies.length} plies`,
+        `depths ${g.depths.join(", ") || "none"}`,
+      ]
+        .filter(Boolean)
+        .join(" · ");
+
+      // Only when the log carried a GameURL. A link we built ourselves could point at the wrong
+      // board, and the whole point of this one is checking the dashboard against the real thing.
+      const link = $("lichess") as HTMLAnchorElement;
+      link.classList.toggle("hidden", !g.url);
+      if (g.url) link.href = g.url;
       renderChart(g, m);
       renderSignals(g);
       renderChanges(g);

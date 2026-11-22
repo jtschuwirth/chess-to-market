@@ -39,6 +39,17 @@ is hypothetical, computed from recorded prices, and the payload says so (`"hypot
 
 Most routes take `?run=N` (`-1` for the whole file); the newest run is the default.
 
+## Game headers
+
+Game rows and the game detail carry `title`, `white`, `black`, ratings, `result`, `winner`,
+`finished`, `board`, `event` and `url`, taken from the latest `game` record for that id.
+
+`finished` is `null`, not `false`, when the log carries no `game` record: "nobody told us" and
+"still in play" are different states, and showing the second for the first would be the dashboard
+inventing a fact. The PGN result token is the only honest end-of-game signal — decisive games
+between titled players end in resignations, so the final position is not mate and the board says
+nothing. `url` is the `GameURL` header verbatim, never constructed.
+
 ## Runs, and why they exist
 
 The tool appends to its log, so one file usually holds several process runs — and `mono_ms` restarts

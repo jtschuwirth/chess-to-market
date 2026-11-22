@@ -160,9 +160,20 @@ header.top nav {
 
 .card > header {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 10px;
   margin-bottom: 12px;
+}
+
+.card > header h2 {
+  white-space: nowrap;
+}
+
+.card > header .btn {
+  margin-left: auto;
+  white-space: nowrap;
+  align-self: center;
 }
 
 .card > header .sub {
@@ -455,5 +466,6 @@ tbody tr:hover td {
 }
 
 .hidden {
-  display: none;
+  /* Beats the inline `display` on the elements that carry it. */
+  display: none !important;
 }

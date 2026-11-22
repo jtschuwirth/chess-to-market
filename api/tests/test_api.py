@@ -184,3 +184,82 @@ class TestRunSelection(unittest.TestCase):
         span = max(e["t"] for e in body["evals"])
         for s in body["signals"]:
             self.assertLessEqual(s["t"], span + 1.0)
+
+
+@unittest.skipIf(TestClient is None, "fastapi not installed")
+class TestGameHeaders(unittest.TestCase):
+    """Names, result and the broadcast link — and what happens when the log has none of them."""
+
+    def client_for(self, lines: list[str]) -> "TestClient":
+        return TestClient(create_app(Settings(log_path=str(write_log(lines)))))
+
+    def test_names_become_the_title_and_the_result_marks_it_finished(self) -> None:
+        g = self.client_for(generate()).get("/api/games").json()["games"][0]
+        self.assertEqual(g["title"], "Ding, Liren — Gukesh, D")
+        self.assertEqual(g["white_elo"], 2728)
+        self.assertEqual(g["result"], "0-1")
+        self.assertTrue(g["finished"])
+        self.assertEqual(g["winner"], "black")
+        self.assertTrue(g["url"].startswith("https://lichess.org/broadcast/"))
+
+    def test_the_latest_game_record_wins(self) -> None:
+        # The game is seen in play first and finished later; the dashboard must show the finish.
+        lines = generate()
+        self.assertEqual(
+            sum(1 for ln in lines if json.loads(ln)["payload"]["source"] == "game"),
+            2,
+            "the reference log must exercise both sightings",
+        )
+        detail = self.client_for(lines).get("/api/games/synth-g14").json()
+        self.assertEqual(detail["result"], "0-1")
+
+    def test_a_log_without_game_records_falls_back_to_the_id(self) -> None:
+        lines = [ln for ln in generate() if json.loads(ln)["payload"]["source"] != "game"]
+        g = self.client_for(lines).get("/api/games").json()["games"][0]
+        self.assertEqual(g["title"], g["game_id"])
+        self.assertIsNone(g["url"])
+        self.assertIsNone(
+            g["finished"], "unknown must not be shown as in-play — that would invent a fact"
+        )
+
+    def test_a_game_in_play_is_not_finished(self) -> None:
+        lines = [
+            ln
+            for ln in generate()
+            if json.loads(ln)["payload"].get("result") != "0-1"
+        ]
+        g = self.client_for(lines).get("/api/games").json()["games"][0]
+        self.assertFalse(g["finished"])
+        self.assertIsNone(g["winner"])
+
+    def test_a_game_record_alone_is_enough_to_list_a_game(self) -> None:
+        # A board that has not moved yet still belongs on the dashboard.
+        lines = [ln for ln in generate() if json.loads(ln)["payload"]["source"] in ("note", "game")]
+        games = self.client_for(lines).get("/api/games").json()["games"]
+        self.assertEqual(len(games), 1)
+        self.assertEqual(games[0]["plies"], 0)
+
+
+@unittest.skipIf(TestClient is None, "fastapi not installed")
+class TestLaunchFlags(unittest.TestCase):
+    def test_the_flags_reach_the_app(self) -> None:
+        # The regression: `runtime` builds the app at import time from this variable, so a launcher
+        # that imports it before setting the variable serves the default log and says nothing.
+        import importlib
+        import os
+
+        from api.settings import ENV_VAR
+
+        before = os.environ.get(ENV_VAR)
+        os.environ[ENV_VAR] = json.dumps(["--log", "logs/elsewhere.jsonl", "--depth", "12"])
+        try:
+            import api.runtime
+
+            mod = importlib.reload(api.runtime)
+            self.assertEqual(mod.app.state.settings.log_path, "logs/elsewhere.jsonl")
+            self.assertEqual(mod.app.state.settings.pipeline.eval_depth, 12)
+        finally:
+            if before is None:
+                os.environ.pop(ENV_VAR, None)
+            else:
+                os.environ[ENV_VAR] = before

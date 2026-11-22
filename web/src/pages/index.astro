@@ -55,7 +55,7 @@ import Shell from "../layouts/Shell.astro";
 <script>
   import { api, watch, type Dashboard, type GameRow } from "../lib/api";
   import { drawChart, type Series } from "../lib/chart";
-  import { esc, moveOf, pct, price, secs, stateLabel, usd } from "../lib/format";
+  import { esc, moveOf, outcome, pct, price, secs, stateLabel, usd } from "../lib/format";
 
   const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
   const $ = (id: string) => document.getElementById(id)!;
@@ -166,12 +166,24 @@ import Shell from "../layouts/Shell.astro";
            <span style="flex:${w[1] || 0.001};background:var(--series-3)"></span>
            <span style="flex:${w[2] || 0.001};background:var(--series-2)"></span>
          </div>`
-      : `<div class="empty" style="padding:0">no evaluation yet</div>`;
-    return `<a class="card gamecard" href="/game?id=${encodeURIComponent(g.game_id)}">
+      : `<div class="empty" style="padding:0">${
+          g.finished ? "finished — not evaluated" : "no evaluation yet"
+        }</div>`;
+    const ended = outcome(g.result, g.winner);
+    const status = ended
+      ? `<span class="badge ${g.winner === "white" ? "white_winning" : g.winner === "black" ? "black_winning" : "level"}">
+           <span class="dot"></span>${esc(ended)}</span>`
+      : `<span class="badge ${g.state ?? "level"}"><span class="dot"></span>${esc(stateLabel(g.state))}</span>`;
+    return `<a class="card gamecard" href="/game?id=${encodeURIComponent(g.game_id)}${
+      run === null ? "" : `&run=${run}`
+    }">
       <div class="row">
-        <span class="id">${esc(g.game_id)}</span>
-        <span class="badge ${g.state ?? "level"}"><span class="dot"></span>${esc(stateLabel(g.state))}</span>
-        <span class="muted mono" style="margin-left:auto">${esc(moveOf(g.last_ply))} ${esc(g.last_san ?? "")}</span>
+        <strong style="font-size:.9rem">${esc(g.title)}</strong>
+        <span class="muted mono" style="margin-left:auto;font-size:.72rem">${esc(g.game_id)}</span>
+      </div>
+      <div class="row">
+        ${status}
+        <span class="muted mono" style="margin-left:auto;font-size:.76rem">${esc(moveOf(g.last_ply))} ${esc(g.last_san ?? "")}</span>
       </div>
       ${bar}
       <div class="row muted mono" style="font-size:.76rem">
@@ -182,10 +194,17 @@ import Shell from "../layouts/Shell.astro";
     </a>`;
   }
 
+  /** Live games first, then the most recently active. A finished board is reference, not news. */
+  const byInterest = (a: GameRow, b: GameRow) =>
+    Number(a.finished === true) - Number(b.finished === true) ||
+    b.last_seen_t - a.last_seen_t;
+
   function renderGames(d: Dashboard) {
-    $("gamesub").textContent = `${d.games.length} in the log`;
+    const done = d.games.filter((g) => g.finished === true).length;
+    $("gamesub").textContent =
+      `${d.games.length} in the log` + (done ? ` · ${done} finished` : "");
     $("games").innerHTML = d.games.length
-      ? d.games.map(gameCard).join("")
+      ? d.games.slice().sort(byInterest).map(gameCard).join("")
       : `<p class="empty">no games yet — no ply records in the log</p>`;
   }
 

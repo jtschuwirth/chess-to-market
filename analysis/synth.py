@@ -60,6 +60,16 @@ PLY_EVERY_S = 110          # a classical game's rough pace
 BLUNDER_INDEX = 4
 GAME_ID = "synth-g14"
 
+# The `game` record's headers. Modelled on a real broadcast's PGN tags.
+HEADERS = {
+    "source": "game", "game_id": GAME_ID,
+    "white": "Ding, Liren", "black": "Gukesh, D",
+    "white_elo": 2728, "black_elo": 2783,
+    "white_title": "GM", "black_title": "GM",
+    "board": "14.1", "event": "Synthetic Championship 2024",
+    "url": "https://lichess.org/broadcast/synthetic/round-14/synth-round/synth-g14",
+}
+
 
 def _rec(mono_ms: int, payload: dict) -> str:
     return json.dumps({
@@ -79,6 +89,10 @@ def generate(depths: tuple[int, ...] = (12, 16)) -> list[str]:
         (0, {"source": "note", "message": f"run started (synthetic reference log, game {GAME_ID})"}),
         (1, {"source": "note", "message": "lichess: stream open, round synth-round"}),
         (2, {"source": "note", "message": "polymarket: subscribed to 3 assets"}),
+        # Seen first with no result, then again when the result lands — the two moments the Rust
+        # emits a `game` record.
+        (3, dict(HEADERS, result="*")),
+        (904_000, dict(HEADERS, result="0-1")),
     ]
 
     for i, st in enumerate(SCRIPT):

@@ -94,8 +94,10 @@ class TestRead(unittest.TestCase):
         p = self.write([line(i, "note", message=str(i)) for i in range(5)])
         self.assertEqual(len(list(tail(p, from_line=3))), 2)
 
-    def test_known_sources_are_the_documented_five(self):
-        self.assertEqual(KNOWN, {"ply", "market", "eval", "signal", "note"})
+    def test_known_sources_are_the_documented_ones(self):
+        # Guards against a source being added here and not to SCHEMA.md, which is the contract the
+        # Rust is written against.
+        self.assertEqual(KNOWN, {"game", "ply", "market", "eval", "signal", "note"})
 
 
 class TestOrdering(unittest.TestCase):

@@ -93,6 +93,47 @@ def game_ids(snap: Snapshot) -> list[str]:
     return out
 
 
+# The PGN result token is the only honest end-of-game signal: most decisive games between titled
+# players end in a resignation, so the final position is not mate and the board says nothing.
+WINNER = {"1-0": "white", "0-1": "black", "1/2-1/2": "draw"}
+
+
+def _headers(snap: Snapshot) -> dict[str, dict[str, Any]]:
+    """The latest `game` record per id. A finish arrives as a second record for the same game."""
+    out: dict[str, dict[str, Any]] = {}
+    for r in snap.records:
+        if r.source == "game" and r.game_id:
+            out[r.game_id] = r.payload
+    return out
+
+
+def _info(game_id: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+    """Names, result and broadcast link — all optional, so this degrades to the bare id.
+
+    `finished` is `None`, not `False`, when the log carries no `game` record for this id: "nobody
+    told us" and "still in play" are different states, and showing the second for the first would
+    be a dashboard inventing a fact.
+    """
+    p = payload or {}
+    white, black = p.get("white"), p.get("black")
+    result = p.get("result")
+    return {
+        "title": f"{white} — {black}" if white and black else game_id,
+        "white": white,
+        "black": black,
+        "white_elo": p.get("white_elo"),
+        "black_elo": p.get("black_elo"),
+        "white_title": p.get("white_title"),
+        "black_title": p.get("black_title"),
+        "result": result,
+        "finished": None if result is None else result in WINNER,
+        "winner": WINNER.get(result or ""),
+        "board": p.get("board"),
+        "event": p.get("event"),
+        "url": p.get("url"),
+    }
+
+
 def _evals_of(snap: Snapshot, game_id: str | None, depth: int | None) -> list[Record]:
     return [
         r
@@ -137,6 +178,7 @@ def _state_timeline(
 def games(snap: Snapshot, cfg: PipelineConfig) -> list[dict[str, Any]]:
     """One row per game: enough to render a board list and to spot a dead feed."""
     out = []
+    headers = _headers(snap)
     for gid in game_ids(snap):
         plies = [r for r in snap.records if r.source == "ply" and r.game_id == gid]
         evals = _evals_of(snap, gid, cfg.eval_depth)
@@ -146,7 +188,8 @@ def games(snap: Snapshot, cfg: PipelineConfig) -> list[dict[str, Any]]:
         state, _ = _state_timeline(evals, cfg)
         wdl = last_eval.wdl_white() if last_eval else None
         out.append(
-            {
+            _info(gid, headers.get(gid))
+            | {
                 "game_id": gid,
                 "plies": len(plies),
                 "evals": len(evals),
@@ -174,7 +217,7 @@ def game(snap: Snapshot, game_id: str, cfg: PipelineConfig) -> dict[str, Any] | 
     evals = _evals_of(snap, game_id, cfg.eval_depth)
     state, changes = _state_timeline(evals, cfg)
     sigs = [s for s in snap.result.signals if s.game_id == game_id]
-    return {
+    return _info(game_id, _headers(snap).get(game_id)) | {
         "game_id": game_id,
         "state": state,
         "decision_depth": cfg.eval_depth,
@@ -259,6 +302,8 @@ def recent(snap: Snapshot, limit: int = 100) -> list[dict[str, Any]]:
 
 def describe(r: Record) -> str:
     p = r.payload
+    if r.source == "game":
+        return f"{p.get('white') or '?'} — {p.get('black') or '?'}  {p.get('result') or ''}".strip()
     if r.source == "ply":
         return f"ply {p.get('ply')} {p.get('san')}"
     if r.source == "eval":

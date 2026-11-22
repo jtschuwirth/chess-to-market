@@ -70,10 +70,11 @@ class ParseReport:
         return "\n".join(out)
 
 
-KNOWN = {"ply", "market", "eval", "signal", "note"}
+KNOWN = {"game", "ply", "market", "eval", "signal", "note"}
 
 # Fields the analysis actually consumes. Anything else is passed through untouched.
 REQUIRED = {
+    "game": ("game_id",),
     "ply": ("san",),
     "market": ("leg",),
     "eval": ("wdl_white",),

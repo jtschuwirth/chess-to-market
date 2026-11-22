@@ -19,7 +19,7 @@ from dataclasses import replace
 from analysis.config_defaults import PipelineConfig
 from analysis.paper import PaperConfig
 
-from .settings import Settings
+from .settings import ENV_VAR, Settings
 
 
 def build(argv: list[str] | None = None) -> tuple[Settings, str, int, bool]:
@@ -80,11 +80,9 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     settings, host, port, reload = build(raw_argv)
 
-    # The reloader re-imports in a child process, so the launch flags have to travel in the
-    # environment: a module global set here would not survive.
-    from . import runtime
-
-    os.environ[runtime.ENV_VAR] = json.dumps(raw_argv)
+    # Set before importing the app: importing `runtime` *builds* it, and it reads this. Importing
+    # first and setting after is how `--log` ended up silently ignored.
+    os.environ[ENV_VAR] = json.dumps(raw_argv)
     print(f"API:  http://{host}:{port}/api/dashboard   docs: http://{host}:{port}/docs")
     print(f"log:  {settings.log_path}")
     uvicorn.run("api.runtime:app", host=host, port=port, reload=reload, log_level="warning")
