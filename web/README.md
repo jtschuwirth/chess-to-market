@@ -53,7 +53,14 @@ folder per tournament, so event and round pick a *file*. A file can still hold s
 if you restarted the same round, which is the third selector — it appears only when a file has more
 than one.
 
-**The x-axis is seconds since the current *run* started.** A log file is appended across restarts,
+**The game chart's x-axis is the move number, not the clock.** A game's evaluation is a function of
+the position, so a time axis gives a blitzed run of ten moves three pixels while handing one long
+think half the chart — about half of all points landed within 3 px of their neighbour, which is what
+made it look like noise. The `x: move` / `x: time` button switches, because reading the lag in
+seconds is the whole point of the engine-against-market comparison; in move mode the market is
+placed at the fractional move its timestamp falls in.
+
+**The old note, still true of the time axis:** A log file is appended across restarts,
 so `mono_ms` restarts inside it. The API splits the file into runs and serves the newest; the
 selector appears only when a file holds more than one. See `api/store.py`.
 

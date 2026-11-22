@@ -17,6 +17,8 @@ export type ChartOpts = {
   height?: number;
   fmtY?: (n: number) => string;
   fmtX?: (n: number) => string;
+  /** For the tooltip, where there is room for a word. Defaults to `fmtX`. */
+  fmtTipX?: (n: number) => string;
   labelEnds?: boolean;
 };
 
@@ -43,6 +45,7 @@ export function drawChart(host: HTMLElement, o: ChartOpts): void {
   const H = o.height ?? 260;
   const fmtY = o.fmtY ?? ((n) => n.toFixed(2));
   const fmtX = o.fmtX ?? ((n) => `${Math.round(n)}s`);
+  const fmtTipX = o.fmtTipX ?? fmtX;
   const all = o.series.flatMap((s) => s.points);
 
   host.textContent = "";
@@ -113,10 +116,17 @@ export function drawChart(host: HTMLElement, o: ChartOpts): void {
     svg.append(t);
   }
 
+  // Labels are stacked when their rules are close together, rather than drawn on top of each
+  // other: two signals seconds apart is exactly when you most want to read both.
+  const ruleRows: number[] = [];
   for (const r of o.rules ?? []) {
     if (r.x < x0 || r.x > x1) continue;
     const stroke =
       r.tone === "bad" ? "var(--critical)" : r.tone === "warn" ? "var(--warning)" : "var(--border-strong)";
+    const labelWidth = r.label.length * 5.2;
+    let row = 0;
+    while (ruleRows[row] !== undefined && ruleRows[row] > px(r.x)) row += 1;
+    ruleRows[row] = px(r.x) + labelWidth;
     svg.append(
       svgEl("line", {
         x1: px(r.x),
@@ -130,7 +140,7 @@ export function drawChart(host: HTMLElement, o: ChartOpts): void {
     );
     const t = svgEl("text", {
       x: px(r.x) + 4,
-      y: PAD.t + 9,
+      y: PAD.t + 9 + row * 11,
       fill: stroke,
       "font-size": 9.5,
     });
@@ -220,7 +230,7 @@ export function drawChart(host: HTMLElement, o: ChartOpts): void {
     cross.setAttribute("x2", String(sx));
     cross.setAttribute("opacity", "1");
 
-    let head = fmtX(x);
+    let head = fmtTipX(x);
     const rows: string[] = [];
     o.series.forEach((s, i) => {
       const d = dots[i];
@@ -232,7 +242,7 @@ export function drawChart(host: HTMLElement, o: ChartOpts): void {
       d.setAttribute("cx", String(px(p.x)));
       d.setAttribute("cy", String(py(p.y)));
       d.setAttribute("opacity", "1");
-      head = fmtX(p.x);
+      head = fmtTipX(p.x);
       rows.push(
         `<div class="row"><span class="name" style="color:${s.color}"><i></i>${s.name}</span><span>${fmtY(p.y)}</span></div>`,
       );

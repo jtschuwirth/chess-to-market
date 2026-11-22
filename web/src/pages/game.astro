@@ -15,6 +15,7 @@ import Shell from "../layouts/Shell.astro";
     <div class="legend" id="legend"></div>
     <div class="chart" id="chart"></div>
     <div class="row" style="display:flex;gap:8px;margin-top:10px;align-items:center">
+      <button class="btn" id="axis" type="button" aria-pressed="true">x: move</button>
       <button class="btn" id="toggle" type="button" aria-pressed="false">Table view</button>
       <span class="muted" style="font-size:.78rem" id="chartnote"></span>
     </div>
@@ -96,23 +97,51 @@ import Shell from "../layouts/Shell.astro";
     c.lastElementChild!.textContent = text;
   };
 
+  /** Where a wall-clock instant sits on the move axis, as a fractional ply. */
+  function plyAxis(g: GameDetail): (ts: number) => number | null {
+    const pts = g.plies
+      .filter((p) => p.move_unix_ms)
+      .map((p) => ({ ply: p.ply, ts: p.move_unix_ms! / 1000 }));
+    if (pts.length < 2) return () => null;
+    return (ts: number) => {
+      if (ts <= pts[0].ts) return pts[0].ply;
+      for (let i = 1; i < pts.length; i += 1) {
+        if (ts <= pts[i].ts) {
+          const span = pts[i].ts - pts[i - 1].ts;
+          const frac = span > 0 ? (ts - pts[i - 1].ts) / span : 0;
+          return pts[i - 1].ply + frac * (pts[i].ply - pts[i - 1].ply);
+        }
+      }
+      return pts[pts.length - 1].ply;
+    };
+  }
+
+  // Default. A game's evaluation is a function of the position, not of when we computed it —
+  // on a time axis a blitzed sequence of ten moves gets three pixels while one long think gets
+  // half the chart. Time is still available, because reading the lag in seconds is the point of
+  // the engine-against-market comparison.
+  let byMove = true;
+
   function renderChart(g: GameDetail) {
     const m = g.market;
+    const toPly = plyAxis(g);
+    const evalX = (e: { ply: number | null; t: number }) =>
+      byMove ? (e.ply ?? 0) : e.t;
     const series: Series[] = [
       {
         name: "White win",
         color: "var(--series-1)",
-        points: g.evals.filter((e) => e.wdl_white).map((e) => ({ x: e.t, y: e.wdl_white![0] })),
+        points: g.evals.filter((e) => e.wdl_white).map((e) => ({ x: evalX(e), y: e.wdl_white![0] })),
       },
       {
         name: "Draw",
         color: "var(--series-3)",
-        points: g.evals.filter((e) => e.wdl_white).map((e) => ({ x: e.t, y: e.wdl_white![1] })),
+        points: g.evals.filter((e) => e.wdl_white).map((e) => ({ x: evalX(e), y: e.wdl_white![1] })),
       },
       {
         name: "Black win",
         color: "var(--series-2)",
-        points: g.evals.filter((e) => e.wdl_white).map((e) => ({ x: e.t, y: e.wdl_white![2] })),
+        points: g.evals.filter((e) => e.wdl_white).map((e) => ({ x: evalX(e), y: e.wdl_white![2] })),
       },
     ];
 
@@ -120,18 +149,21 @@ import Shell from "../layouts/Shell.astro";
     // the gap between them is the thing this project measures. Dashed, so engine and market are
     // told apart by style rather than by a second scale.
     m.legs.slice(0, LEG_COLORS.length).forEach((leg, i) => {
-      const pts = (m.series[leg] ?? []).filter((p) => p.ask !== null);
+      const pts = (m.series[leg] ?? [])
+        .filter((p) => p.ask !== null)
+        .map((p) => ({ x: byMove ? toPly(p.ts) : p.t, y: p.ask! }))
+        .filter((p): p is { x: number; y: number } => p.x !== null);
       if (pts.length)
         series.push({
           name: `${leg} (market)`,
           color: LEG_COLORS[i],
           dashed: true,
-          points: pts.map((p) => ({ x: p.t, y: p.ask! })),
+          points: pts,
         });
     });
 
     const rules: Rule[] = g.signals.map((s) => ({
-      x: s.t,
+      x: byMove ? (s.ply ?? 0) : s.t,
       label: `${s.kind} ${moveOf(s.ply)}${s.san ?? ""}`,
       tone: s.kind === "flip" ? "bad" : s.kind === "decisive" ? "warn" : "neutral",
     }));
@@ -150,7 +182,9 @@ import Shell from "../layouts/Shell.astro";
       yDomain: [0, 1],
       height: 300,
       fmtY: (n) => n.toFixed(2),
-      fmtX: (n) => secs(n),
+      // Ticks get the move number alone; "30..." reads as a truncated label on an axis.
+      fmtX: (n) => (byMove ? String(Math.ceil(Math.round(n) / 2)) : secs(n)),
+      fmtTipX: (n) => (byMove ? `move ${moveOf(Math.round(n))}` : secs(n)),
       labelEnds: false,
     });
 
@@ -276,7 +310,8 @@ import Shell from "../layouts/Shell.astro";
         },
       ],
       height: 200,
-      fmtX: (n) => `ply ${Math.round(n)}`,
+      fmtX: (n) => String(Math.ceil(Math.round(n) / 2)),
+      fmtTipX: (n) => `move ${moveOf(Math.round(n))}`,
       fmtY: (n) => ms(n),
       labelEnds: false,
     });
@@ -412,6 +447,14 @@ import Shell from "../layouts/Shell.astro";
       busy = false;
     }
   }
+
+  $("axis").addEventListener("click", () => {
+    byMove = !byMove;
+    const b = $("axis");
+    b.setAttribute("aria-pressed", String(byMove));
+    b.textContent = byMove ? "x: move" : "x: time";
+    refresh();
+  });
 
   $("toggle").addEventListener("click", () => {
     const b = $("toggle");
