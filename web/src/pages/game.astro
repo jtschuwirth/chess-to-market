@@ -64,6 +64,8 @@ import Shell from "../layouts/Shell.astro";
   const params = new URLSearchParams(location.search);
   const id = params.get("id") ?? "";
   const run = params.has("run") ? Number(params.get("run")) : null;
+  const log = params.get("log");
+  const scope = () => ({ log, run });
   const LEG_COLORS = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
 
   const conn = (ok: boolean, text: string) => {
@@ -219,7 +221,7 @@ import Shell from "../layouts/Shell.astro";
     if (busy) return;
     busy = true;
     try {
-      const [g, m] = await Promise.all([api.game(id, run), api.market(run)]);
+      const [g, m] = await Promise.all([api.game(id, scope()), api.market(scope())]);
       conn(true, `live · rev ${g.revision}`);
       $("gid").textContent = g.title;
 
@@ -272,5 +274,5 @@ import Shell from "../layouts/Shell.astro";
   });
 
   refresh();
-  watch(() => refresh());
+  watch(() => refresh(), scope);
 </script>

@@ -11,6 +11,23 @@ export type Meta = {
   runs: RunInfo[];
 };
 
+export type LogFile = {
+  path: string;
+  event_slug: string;
+  event_name: string;
+  round_slug: string;
+  round_name: string;
+  size: number;
+  mtime: number;
+};
+
+export type EventGroup = {
+  slug: string;
+  name: string;
+  mtime: number;
+  rounds: LogFile[];
+};
+
 export type RunInfo = {
   index: number;
   records: number;
@@ -134,6 +151,7 @@ export type Market = {
 };
 
 export type Config = {
+  log_dir: string;
   log_path: string;
   eval_depth: number | null;
   latency_s: number;
@@ -153,6 +171,8 @@ export type FeedRow = {
 };
 
 export type Dashboard = Meta & {
+  log: string;
+  logs: EventGroup[];
   config: Config;
   health: Health;
   games: GameRow[];
@@ -189,21 +209,34 @@ async function get<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-const runQuery = (run: number | null, first = true) =>
-  run === null || run === undefined ? "" : `${first ? "?" : "&"}run=${run}`;
+/** Which log and which run a request is about. Both optional; the server has sensible defaults. */
+export type Scope = { log?: string | null; run?: number | null };
+
+const qs = (scope: Scope, extra: Record<string, string | number> = {}) => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(extra)) p.set(k, String(v));
+  if (scope.log) p.set("log", scope.log);
+  if (scope.run !== null && scope.run !== undefined) p.set("run", String(scope.run));
+  const s = p.toString();
+  return s ? `?${s}` : "";
+};
 
 export const api = {
-  dashboard: (limit = 60, run: number | null = null) =>
-    get<Dashboard>(`/dashboard?recent_limit=${limit}${runQuery(run, false)}`),
-  game: (id: string, run: number | null = null) =>
-    get<GameDetail>(`/games/${encodeURIComponent(id)}${runQuery(run)}`),
-  market: (run: number | null = null) =>
-    get<Market & { revision: number }>(`/market${runQuery(run)}`),
-  revision: () => get<Meta>("/revision"),
+  logs: () => get<{ root: string; current: string; events: EventGroup[]; count: number }>("/logs"),
+  dashboard: (limit = 60, scope: Scope = {}) =>
+    get<Dashboard>(`/dashboard${qs(scope, { recent_limit: limit })}`),
+  game: (id: string, scope: Scope = {}) =>
+    get<GameDetail>(`/games/${encodeURIComponent(id)}${qs(scope)}`),
+  market: (scope: Scope = {}) => get<Market & { revision: number }>(`/market${qs(scope)}`),
+  revision: (scope: Scope = {}) => get<Meta>(`/revision${qs(scope)}`),
 };
 
 /** Calls `onTick` when the log grows. Falls back to polling when SSE is unavailable. */
-export function watch(onTick: (m: Meta) => void, intervalMs = 2000): () => void {
+export function watch(
+  onTick: (m: Meta) => void,
+  scope: () => Scope = () => ({}),
+  intervalMs = 2000,
+): () => void {
   let stopped = false;
   let timer = 0;
   let es: EventSource | null = null;
@@ -213,7 +246,7 @@ export function watch(onTick: (m: Meta) => void, intervalMs = 2000): () => void 
     const tick = async () => {
       if (stopped) return;
       try {
-        const m = await api.revision();
+        const m = await api.revision(scope());
         if (m.revision !== last) {
           last = m.revision;
           onTick(m);
@@ -227,7 +260,8 @@ export function watch(onTick: (m: Meta) => void, intervalMs = 2000): () => void 
   };
 
   try {
-    es = new EventSource(`${BASE}/events`);
+    const s = scope();
+    es = new EventSource(`${BASE}/events${s.log ? `?log=${encodeURIComponent(s.log)}` : ""}`);
     es.onmessage = (ev) => {
       try {
         onTick(JSON.parse(ev.data) as Meta);

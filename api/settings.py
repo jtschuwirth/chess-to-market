@@ -16,7 +16,12 @@ ENV_VAR = "C2M_API_ARGS"
 class Settings:
     """Read-only by construction: no endpoint changes any of this."""
 
-    log_path: str = "logs/run.jsonl"
+    # Root of the per-round logs the Rust writes: <log_dir>/<tournament>/<round>.jsonl.
+    log_dir: str = "logs"
+
+    # One specific log to open by default. None means "the most recently written one under
+    # log_dir", which is almost always the run you just started.
+    log_path: str | None = None
     pipeline: PipelineConfig = field(default_factory=PipelineConfig)
     # Origins the dashboard is served from in development.
     cors_origins: tuple[str, ...] = (

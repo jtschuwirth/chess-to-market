@@ -1,8 +1,9 @@
 """Launch the API.
 
     cd code
-    python -m api --log logs/run.jsonl
-    python -m api --log logs/run.jsonl --white gukesh --black sindarov --fee-rate 0.05
+    python -m api                                    # newest round under logs/
+    python -m api --log-dir logs
+    python -m api --log logs/<tournament>/<round>.jsonl --white gukesh --black sindarov
 
 Flags mirror `python -m analysis` so a dashboard and a replay can be pointed at the same log with
 the same settings and are then guaranteed to agree.
@@ -24,7 +25,17 @@ from .settings import ENV_VAR, Settings
 
 def build(argv: list[str] | None = None) -> tuple[Settings, str, int, bool]:
     ap = argparse.ArgumentParser(prog="python -m api", description=__doc__)
-    ap.add_argument("--log", default="logs/run.jsonl", help="JSONL observation log to read")
+    ap.add_argument(
+        "--log",
+        default=None,
+        help="one log to open by default; omit to open the most recent under --log-dir",
+    )
+    ap.add_argument(
+        "--log-dir",
+        default="logs",
+        dest="log_dir",
+        help="root of the per-round logs: <dir>/<tournament>/<round>.jsonl (default logs)",
+    )
     ap.add_argument("--host", default="127.0.0.1", help="bind address (default localhost only)")
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--reload", action="store_true", help="reload on code changes")
@@ -59,6 +70,7 @@ def build(argv: list[str] | None = None) -> tuple[Settings, str, int, bool]:
     )
     defaults = Settings()
     settings = Settings(
+        log_dir=args.log_dir,
         log_path=args.log,
         pipeline=cfg,
         cors_origins=defaults.cors_origins + tuple(args.origin or ()),
@@ -84,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     # first and setting after is how `--log` ended up silently ignored.
     os.environ[ENV_VAR] = json.dumps(raw_argv)
     print(f"API:  http://{host}:{port}/api/dashboard   docs: http://{host}:{port}/docs")
-    print(f"log:  {settings.log_path}")
+    print(f"logs: {settings.log_path or settings.log_dir + '  (newest round)'}")
     uvicorn.run("api.runtime:app", host=host, port=port, reload=reload, log_level="warning")
     return 0
 

@@ -15,7 +15,8 @@ from analysis.config_defaults import PipelineConfig
 from analysis.observations import Record, read
 from analysis.pipeline import run
 from analysis.synth import generate
-from api.store import split_runs  # needs no FastAPI
+from api import logs  # needs no FastAPI
+from api.store import split_runs
 
 try:
     from fastapi.testclient import TestClient
@@ -42,7 +43,8 @@ class TestEndpoints(unittest.TestCase):
     def test_config_reports_what_the_server_was_given(self) -> None:
         body = self.client.get("/api/config").json()
         self.assertEqual(body["white_leg"], "white")
-        self.assertEqual(body["log_path"], str(self.log))
+        # Paths are reported posix-style, so a log path survives a URL and a Windows/Linux swap.
+        self.assertEqual(body["log_path"], self.log.as_posix())
         self.assertEqual(body["eval_depth"], 16)
 
     def test_health_carries_the_pipeline_diagnoses(self) -> None:
@@ -263,3 +265,107 @@ class TestLaunchFlags(unittest.TestCase):
                 os.environ.pop(ENV_VAR, None)
             else:
                 os.environ[ENV_VAR] = before
+
+
+class TestLogDiscovery(unittest.TestCase):
+    """The picker's data: what is on disk, grouped by event."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        self.event = self.root / "world-junior-2026-open"
+        self.event.mkdir()
+
+    def write(self, path: Path, lines: list[str]) -> Path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_rounds_group_under_their_event(self) -> None:
+        self.write(self.event / "round-5.jsonl", generate())
+        self.write(self.event / "round-6.jsonl", generate())
+        events = logs.grouped(logs.discover(self.root))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            sorted(r["round_slug"] for r in events[0]["rounds"]), ["round-5", "round-6"]
+        )
+
+    def test_the_event_name_comes_from_the_log_not_the_slug(self) -> None:
+        # A slug is unreadable in a dropdown; the relay's own name is not.
+        self.write(self.event / "round-5.jsonl", generate())
+        events = logs.grouped(logs.discover(self.root))
+        self.assertEqual(events[0]["name"], "Synthetic Championship 2024")
+
+    def test_a_log_with_no_game_record_falls_back_to_its_slug(self) -> None:
+        self.write(self.event / "round-9.jsonl", ['{"mono_ms":0,"wall_unix_ms":1,"payload":{"source":"note","message":"x"}}'])
+        f = [x for x in logs.discover(self.root) if x.round_slug == "round-9"][0]
+        self.assertEqual(f.event_name, "World Junior 2026 Open")
+        self.assertEqual(f.round_name, "Round 9")
+
+    def test_the_round_name_can_come_from_the_opening_note(self) -> None:
+        note = (
+            '{"mono_ms":0,"wall_unix_ms":1,"payload":{"source":"note","message":'
+            '"lichess: FIDE World Junior · Round 5 (yRwFuCyK), startsAt 1795295700000"}}'
+        )
+        self.write(self.event / "r.jsonl", [note])
+        f = [x for x in logs.discover(self.root) if x.round_slug == "r"][0]
+        self.assertEqual(f.event_name, "FIDE World Junior")
+        self.assertEqual(f.round_name, "Round 5")
+
+    def test_loose_logs_at_the_root_are_kept_separate(self) -> None:
+        self.write(self.root / "demo.jsonl", generate())
+        self.write(self.event / "round-5.jsonl", generate())
+        slugs = {e["slug"] for e in logs.grouped(logs.discover(self.root))}
+        self.assertIn(logs.LOOSE, slugs)
+        self.assertIn("world-junior-2026-open", slugs)
+
+    def test_newest_first(self) -> None:
+        import os, time
+
+        a = self.write(self.event / "old.jsonl", generate())
+        b = self.write(self.event / "new.jsonl", generate())
+        os.utime(a, (time.time() - 9999, time.time() - 9999))
+        self.assertEqual(logs.discover(self.root)[0].path, "world-junior-2026-open/new.jsonl")
+
+    def test_a_malformed_log_still_appears(self) -> None:
+        # A half-written line costs a label, never the whole listing.
+        self.write(self.event / "broken.jsonl", ["{not json", '{"mono_ms":']);
+        self.assertIn("world-junior-2026-open/broken.jsonl", {f.path for f in logs.discover(self.root)})
+
+    def test_resolve_refuses_anything_not_listed(self) -> None:
+        # The one place a request chooses a path. Only listed paths are accepted, so traversal
+        # never has to be reasoned about.
+        self.write(self.event / "round-5.jsonl", generate())
+        allowed = {f.path for f in logs.discover(self.root)}
+        self.assertIsNotNone(logs.resolve(self.root, "world-junior-2026-open/round-5.jsonl", allowed))
+        for bad in ("../../etc/passwd", "world-junior-2026-open/../../x.jsonl", "/etc/passwd", ""):
+            self.assertIsNone(logs.resolve(self.root, bad, allowed), bad)
+
+
+@unittest.skipIf(TestClient is None, "fastapi not installed")
+class TestLogSelection(unittest.TestCase):
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp())
+        (self.root / "ev").mkdir()
+        for name in ("round-1.jsonl", "round-2.jsonl"):
+            (self.root / "ev" / name).write_text("\n".join(generate()) + "\n", encoding="utf-8")
+        self.client = TestClient(create_app(Settings(log_dir=str(self.root))))
+
+    def test_logs_lists_the_events_and_rounds(self) -> None:
+        body = self.client.get("/api/logs").json()
+        self.assertEqual(body["count"], 2)
+        self.assertEqual(len(body["events"]), 1)
+        self.assertIn(body["current"], {"ev/round-1.jsonl", "ev/round-2.jsonl"})
+
+    def test_a_request_can_choose_its_log(self) -> None:
+        body = self.client.get("/api/games?log=ev/round-1.jsonl").json()
+        self.assertEqual(body["log"], "ev/round-1.jsonl")
+        self.assertTrue(body["games"])
+
+    def test_an_unknown_log_is_a_404(self) -> None:
+        self.assertEqual(self.client.get("/api/games?log=ev/nope.jsonl").status_code, 404)
+        self.assertEqual(self.client.get("/api/games?log=../../etc/passwd").status_code, 404)
+
+    def test_an_empty_directory_still_answers(self) -> None:
+        client = TestClient(create_app(Settings(log_dir=str(Path(tempfile.mkdtemp())))))
+        self.assertEqual(client.get("/api/logs").json()["count"], 0)
+        self.assertTrue(client.get("/api/health").json()["log_missing"])

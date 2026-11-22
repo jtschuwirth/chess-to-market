@@ -181,6 +181,33 @@ header.top nav {
   color: var(--text-muted);
 }
 
+.pickers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.pickers label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.72rem;
+}
+
+.pickers select {
+  max-width: 38ch;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+}
+
 .grid {
   display: grid;
   gap: 14px;

@@ -8,11 +8,12 @@ is the only thing that needs installing.
 
 ```powershell
 cd code; python -m venv .venv; .\.venv\Scripts\python.exe -m pip install -r api\requirements.txt
-cd code; .\.venv\Scripts\python.exe -m api --log logs/<tournament>/<round>.jsonl
+cd code; .\.venv\Scripts\python.exe -m api
 ```
 
-The Rust writes one file per round, under `logs/<tournament-slug>/<round-slug>.jsonl`, so point
-`--log` at the round you want to watch. The server reads exactly the one file it is given.
+It serves every log under `--log-dir` (default `logs`), opening the most recently written one. The
+dashboard switches between them with its event and round pickers — no restart. `--log <file>` pins
+one instead.
 
 Interactive docs at <http://127.0.0.1:8000/docs>.
 
@@ -39,8 +40,13 @@ is hypothetical, computed from recorded prices, and the payload says so (`"hypot
 | `/api/signals` | triggers, confidence, hypothetical positions |
 | `/api/recent` | the raw tail |
 | `/api/runs` · `/api/config` | the process runs in the file · the settings in force |
+| `/api/logs` | every log on disk, grouped by event |
 
-Most routes take `?run=N` (`-1` for the whole file); the newest run is the default.
+Most routes take `?log=<tournament>/<round>.jsonl` and `?run=N` (`-1` for the whole file). The
+newest log and its newest run are the defaults, and every response says which log it answered from.
+
+`?log=` is the one place a request chooses a path, so only paths `/api/logs` already lists are
+accepted — which rules out traversal without having to reason about `..`.
 
 ## Game headers
 

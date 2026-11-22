@@ -11,7 +11,7 @@ It is read-only. It can place no order, because nothing it talks to can.
 Two processes. The API first:
 
 ```powershell
-cd code; .\.venv\Scripts\python.exe -m api --log logs/<tournament>/<round>.jsonl
+cd code; .\.venv\Scripts\python.exe -m api
 ```
 
 Then the dashboard:
@@ -42,6 +42,11 @@ only when the log grows, so an idle run costs one small request per tick.
 **Engine probability and market price share one y-axis on purpose.** They are the same unit — the
 gap between them is the quantity this project exists to measure. Engine lines are solid, market
 lines dashed; colour follows the leg, not the source. A second y-axis would make the gap meaningless.
+
+**Event, round and run are three different selectors.** The Rust writes one file per round under a
+folder per tournament, so event and round pick a *file*. A file can still hold several process runs
+if you restarted the same round, which is the third selector — it appears only when a file has more
+than one.
 
 **The x-axis is seconds since the current *run* started.** A log file is appended across restarts,
 so `mono_ms` restarts inside it. The API splits the file into runs and serves the newest; the

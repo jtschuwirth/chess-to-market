@@ -3,13 +3,11 @@ import Shell from "../layouts/Shell.astro";
 ---
 
 <Shell title="Overview" subtitle="observation log">
-  <div
-    id="runbar"
-    class="hidden"
-    style="display:flex;gap:8px;align-items:center;margin:16px 0 0;font-size:.8rem"
-  >
-    <span class="muted">This log holds several process runs — durations are only valid inside one.</span>
-    <select class="btn" id="run"></select>
+  <div class="pickers" id="pickers">
+    <label>Event <select class="btn" id="event"></select></label>
+    <label>Round <select class="btn" id="round"></select></label>
+    <label class="hidden" id="runwrap">Run <select class="btn" id="run"></select></label>
+    <span class="muted" id="pickernote"></span>
   </div>
 
   <section class="grid tiles" style="margin:16px 0" id="tiles"></section>
@@ -61,6 +59,22 @@ import Shell from "../layouts/Shell.astro";
   const $ = (id: string) => document.getElementById(id)!;
   const params = new URLSearchParams(location.search);
   let run: number | null = params.has("run") ? Number(params.get("run")) : null;
+  let log: string | null = params.get("log");
+  const scope = () => ({ log, run });
+
+  const setUrl = () => {
+    const u = new URL(location.href);
+    log ? u.searchParams.set("log", log) : u.searchParams.delete("log");
+    run === null ? u.searchParams.delete("run") : u.searchParams.set("run", String(run));
+    history.replaceState(null, "", u);
+  };
+
+  const linkFor = (gameId: string) => {
+    const p = new URLSearchParams({ id: gameId });
+    if (log) p.set("log", log);
+    if (run !== null) p.set("run", String(run));
+    return `/game?${p}`;
+  };
 
   const conn = (ok: boolean, text: string) => {
     const c = $("conn");
@@ -174,9 +188,7 @@ import Shell from "../layouts/Shell.astro";
       ? `<span class="badge ${g.winner === "white" ? "white_winning" : g.winner === "black" ? "black_winning" : "level"}">
            <span class="dot"></span>${esc(ended)}</span>`
       : `<span class="badge ${g.state ?? "level"}"><span class="dot"></span>${esc(stateLabel(g.state))}</span>`;
-    return `<a class="card gamecard" href="/game?id=${encodeURIComponent(g.game_id)}${
-      run === null ? "" : `&run=${run}`
-    }">
+    return `<a class="card gamecard" href="${linkFor(g.game_id)}">
       <div class="row">
         <strong style="font-size:.9rem">${esc(g.title)}</strong>
         <span class="muted mono" style="margin-left:auto;font-size:.72rem">${esc(g.game_id)}</span>
@@ -245,40 +257,89 @@ import Shell from "../layouts/Shell.astro";
       .join("");
   }
 
-  function renderRuns(d: Dashboard) {
-    const bar = $("runbar");
-    bar.classList.toggle("hidden", d.run_count < 2);
-    if (d.run_count < 2) return;
-    const sel = $("run") as HTMLSelectElement;
-    const want = String(d.run_index);
-    if (sel.options.length !== d.run_count || sel.value !== want) {
-      sel.innerHTML = d.runs
-        .map(
-          (r) =>
-            `<option value="${r.index}">run ${r.index + 1} — ${new Date(
-              r.started_unix * 1000,
-            ).toISOString().slice(0, 16).replace("T", " ")}Z · ${r.records} records · ${secs(r.span_s)}</option>`,
-        )
+  const fill = (sel: HTMLSelectElement, opts: [string, string][], value: string) => {
+    const want = opts.map(([v, t]) => `${v} ${t}`).join("|");
+    if (sel.dataset.sig !== want) {
+      sel.innerHTML = opts
+        .map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`)
         .join("");
-      sel.value = want;
+      sel.dataset.sig = want;
     }
+    if (sel.value !== value) sel.value = value;
+  };
+
+  const when = (unix: number) =>
+    new Date(unix * 1000).toISOString().slice(0, 16).replace("T", " ") + "Z";
+
+  function renderPickers(d: Dashboard) {
+    log = d.log;
+    const events = d.logs;
+    const current = events.find((e) => e.rounds.some((r) => r.path === log)) ?? events[0];
+
+    fill(
+      $("event") as HTMLSelectElement,
+      events.map((e) => [e.slug, `${e.name} (${e.rounds.length})`] as [string, string]),
+      current?.slug ?? "",
+    );
+    fill(
+      $("round") as HTMLSelectElement,
+      (current?.rounds ?? []).map(
+        (r) => [r.path, `${r.round_name} — ${when(r.mtime)}`] as [string, string],
+      ),
+      log ?? "",
+    );
+
+    // A run selector only when a file actually holds more than one process run.
+    $("runwrap").classList.toggle("hidden", d.run_count < 2);
+    if (d.run_count >= 2) {
+      fill(
+        $("run") as HTMLSelectElement,
+        d.runs.map(
+          (r) =>
+            [String(r.index), `run ${r.index + 1} — ${when(r.started_unix)} · ${secs(r.span_s)}`] as [
+              string,
+              string,
+            ],
+        ),
+        String(d.run_index),
+      );
+    }
+
+    $("pickernote").textContent =
+      d.run_count >= 2 ? "this file holds several runs — durations are only valid inside one" : "";
   }
 
-  ($("run") as HTMLSelectElement).addEventListener("change", (ev) => {
-    run = Number((ev.target as HTMLSelectElement).value);
-    const u = new URL(location.href);
-    u.searchParams.set("run", String(run));
-    history.replaceState(null, "", u);
+  ($("event") as HTMLSelectElement).addEventListener("change", (ev) => {
+    const slug = (ev.target as HTMLSelectElement).value;
+    const group = latest?.logs.find((e) => e.slug === slug);
+    log = group?.rounds[0]?.path ?? null;
+    run = null;
+    setUrl();
     refresh();
   });
 
+  ($("round") as HTMLSelectElement).addEventListener("change", (ev) => {
+    log = (ev.target as HTMLSelectElement).value;
+    run = null;
+    setUrl();
+    refresh();
+  });
+
+  ($("run") as HTMLSelectElement).addEventListener("change", (ev) => {
+    run = Number((ev.target as HTMLSelectElement).value);
+    setUrl();
+    refresh();
+  });
+
+  let latest: Dashboard | null = null;
   let busy = false;
   async function refresh() {
     if (busy) return;
     busy = true;
     try {
-      const d = await api.dashboard(80, run);
-      renderRuns(d);
+      const d = await api.dashboard(80, scope());
+      latest = d;
+      renderPickers(d);
       conn(!d.missing, d.missing ? "log missing" : `live · rev ${d.revision}`);
       renderTiles(d);
       renderHealth(d);
@@ -295,7 +356,7 @@ import Shell from "../layouts/Shell.astro";
   }
 
   refresh();
-  watch(() => refresh());
+  watch(() => refresh(), scope);
   addEventListener("visibilitychange", () => {
     if (!document.hidden) refresh();
   });
