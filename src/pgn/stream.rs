@@ -17,6 +17,20 @@ pub fn game_id(game: &Game<'_>) -> String {
         .unwrap_or_else(|| game.board_key())
 }
 
+/// Everything one chunk changed.
+///
+/// A chunk can change a game's headers, its moves, or both — a result landing usually arrives with
+/// the final move. Both come from **one** `push`, which is the point: `new_infos` and `new_plies`
+/// each push the chunk themselves, so calling both on the same bytes would feed the buffer twice
+/// and split frames in the middle.
+#[derive(Debug, Default)]
+pub struct Update {
+    /// Headers that are new or changed. Empty on most chunks.
+    pub infos: Vec<super::info::GameInfo>,
+    /// Plies not seen before, per game.
+    pub plies: Vec<(String, Vec<PlyInfo>)>,
+}
+
 /// A live view of every game seen on the stream, keyed by id.
 #[derive(Debug, Default)]
 pub struct GameStream {
@@ -105,24 +119,40 @@ impl GameStream {
     /// turns "here is the game again" into "here are the two new moves".
     pub fn new_plies(&mut self, chunk: &[u8]) -> Vec<(String, Vec<PlyInfo>)> {
         let ids = self.push(chunk);
+        self.plies_for(&ids)
+    }
+
+    /// The new plies of games already pushed, so one chunk can feed several outputs.
+    pub(super) fn plies_for(&mut self, ids: &[String]) -> Vec<(String, Vec<PlyInfo>)> {
         let mut out = Vec::new();
         let mut marks = Vec::new();
         for id in ids {
-            let Some(text) = self.games.get(&id) else { continue };
+            let Some(text) = self.games.get(id) else { continue };
             let Some(game) = super::split(text).into_iter().next() else {
                 continue;
             };
             let all = super::moves::plies(&game);
-            let seen = self.emitted.get(&id).copied().unwrap_or(0);
+            let seen = self.emitted.get(id).copied().unwrap_or(0);
             if all.len() > seen {
                 marks.push((id.clone(), all.len()));
-                out.push((id, all[seen..].to_vec()));
+                out.push((id.clone(), all[seen..].to_vec()));
             }
         }
         for (id, n) in marks {
             self.emitted.insert(id, n);
         }
         out
+    }
+
+    /// Feed a chunk once; get back everything it changed.
+    ///
+    /// Headers come first so a game's names reach the log before its moves.
+    pub fn update(&mut self, chunk: &[u8]) -> Update {
+        let ids = self.push(chunk);
+        Update {
+            infos: self.infos_for(&ids),
+            plies: self.plies_for(&ids),
+        }
     }
 
     /// Bytes held back because they do not yet form a complete game. Useful when debugging a

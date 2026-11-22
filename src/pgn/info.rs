@@ -70,13 +70,18 @@ impl GameStream {
     /// result lands — which is exactly a change in these fields.
     pub fn new_infos(&mut self, chunk: &[u8]) -> Vec<GameInfo> {
         let ids = self.push(chunk);
+        self.infos_for(&ids)
+    }
+
+    /// The changed headers of games already pushed, so one chunk can feed several outputs.
+    pub(super) fn infos_for(&mut self, ids: &[String]) -> Vec<GameInfo> {
         let mut out = Vec::new();
         for id in ids {
-            let Some(next) = self.info(&id) else { continue };
-            if self.infos.get(&id) == Some(&next) {
+            let Some(next) = self.info(id) else { continue };
+            if self.infos.get(id) == Some(&next) {
                 continue;
             }
-            self.infos.insert(id, next.clone());
+            self.infos.insert(id.clone(), next.clone());
             out.push(next);
         }
         out
@@ -153,6 +158,48 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert!(out[0].is_finished());
         assert_eq!(out[0].result.as_deref(), Some("1-0"));
+    }
+
+    #[test]
+    fn update_returns_headers_and_plies_from_one_push() {
+        let mut s = GameStream::new();
+        let u = s.update(pgn("g1", "*", "1. e4 e5").as_bytes());
+        assert_eq!(u.infos.len(), 1, "first sighting");
+        assert_eq!(u.plies.len(), 1);
+        assert_eq!(u.plies[0].1.len(), 2);
+    }
+
+    #[test]
+    fn update_does_not_feed_the_buffer_twice() {
+        // `new_infos` and `new_plies` each push the chunk themselves, so calling both on the same
+        // bytes would duplicate them and split a frame mid-game. `update` pushes once.
+        let mut s = GameStream::new();
+        let text = pgn("g1", "*", "1. e4 e5");
+        let (a, b) = text.as_bytes().split_at(text.len() / 2);
+        assert!(s.update(a).plies.is_empty(), "half a game is not a game yet");
+        let u = s.update(b);
+        assert_eq!(u.plies[0].1.len(), 2);
+        assert_eq!(s.pending_bytes(), 0, "nothing left over");
+    }
+
+    #[test]
+    fn update_reports_a_result_landing_with_its_final_move() {
+        let mut s = GameStream::new();
+        s.update(pgn("g1", "*", "1. e4").as_bytes());
+        let u = s.update(pgn("g1", "1-0", "1. e4 e5").as_bytes());
+        assert_eq!(u.infos.len(), 1);
+        assert!(u.infos[0].is_finished());
+        assert_eq!(u.plies[0].1.len(), 1, "only the new ply");
+    }
+
+    #[test]
+    fn a_quiet_chunk_changes_nothing() {
+        let mut s = GameStream::new();
+        let text = pgn("g1", "*", "1. e4");
+        s.update(text.as_bytes());
+        let u = s.update(text.as_bytes());
+        assert!(u.infos.is_empty(), "same headers");
+        assert!(u.plies.is_empty(), "same moves");
     }
 
     #[test]

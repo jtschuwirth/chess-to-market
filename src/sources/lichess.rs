@@ -52,7 +52,16 @@ async fn streaming_run(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
 
-        for (id, fresh) in games.new_plies(&chunk) {
+        let update = games.update(&chunk);
+
+        for info in update.infos {
+            if tx.send(clock.stamp(info.into())).await.is_err() {
+                warn!("lichess: log channel closed");
+                return Ok(());
+            }
+        }
+
+        for (id, fresh) in update.plies {
             let times = move_times_for(&games, &id, starts_at_ms, tc);
 
             for p in &fresh {

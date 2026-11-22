@@ -119,23 +119,17 @@ must be explainable afterwards**, or the lag figures around them cannot be trust
 
 ---
 
-## `game` — Rust status: helper ready, **not yet emitted** (21 Nov 2026)
+## `game` — Rust status: ✅ emitted (21 Nov 2026)
 
-`Payload::Game` exists in `src/observation.rs`, `pgn::info::info()` reads the headers, and
-`GameStream::new_infos()` returns only what is new or changed. What is missing is the call site in
-`sources::lichess::streaming_run`, next to the `new_plies` loop:
+`Payload::Game` in `src/observation.rs`, `pgn::info::info()` for the headers, and
+`GameStream::update()` in `sources::lichess::streaming_run`.
 
-```rust
-for i in games.new_infos(&chunk) {
-    if tx.send(clock.stamp(i.into())).await.is_err() {
-        warn!("lichess: log channel closed");
-        return Ok(());
-    }
-}
-```
+`update()` exists because `new_infos` and `new_plies` each push the chunk themselves: calling both
+on the same bytes would feed the buffer twice and split a frame mid-game. It pushes once and returns
+both, headers first.
 
-Until that lands, the dashboard falls back to the game id and says "finished: unknown" rather than
-guessing.
+Verified against round `yRwFuCyK`: **29 games, 29 `game` records, one each** — no repeats across 45
+seconds of streaming with plies flowing, 23 results and 6 still `*`, every `url` the relay's own.
 
 ## Rust status: ✅ applied (12 Nov 2026)
 
