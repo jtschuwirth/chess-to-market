@@ -4,21 +4,6 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-/// Parse `--asset-id <leg>=<id>`.
-///
-/// The leg label has to come from the operator: nothing downstream can infer which outcome an
-/// asset id refers to, and the analysis refuses to use market records without one.
-fn parse_leg_id(s: &str) -> Result<(String, String), String> {
-    let (leg, id) = s
-        .split_once('=')
-        .ok_or_else(|| format!("expected <leg>=<id>, got `{s}`"))?;
-    let (leg, id) = (leg.trim(), id.trim());
-    if leg.is_empty() || id.is_empty() {
-        return Err(format!("expected <leg>=<id>, got `{s}`"));
-    }
-    Ok((leg.to_string(), id.to_string()))
-}
-
 #[derive(Parser, Debug, Clone)]
 #[command(
     name = "chess-to-market",
@@ -42,13 +27,23 @@ pub struct Cli {
     #[arg(long)]
     pub stream: bool,
 
-    /// Polymarket outcome, as `<leg>=<asset_id>`. Repeat once per outcome.
+    /// A Polymarket outcome, as `<game_id>:<leg>=<asset_id>`. Repeat once per outcome.
     ///
-    /// Example: `--asset-id gukesh=7137… --asset-id draw=9922… --asset-id sindarov=1044…`
+    /// A market belongs to a **game**, not to a round — a tournament relays thirty boards and each
+    /// priced game has its own market.
     ///
-    /// Found by hand — see ticket T-03. This is the primary path, not a fallback.
-    #[arg(long = "asset-id", value_name = "LEG=ID", value_parser = parse_leg_id)]
-    pub asset_ids: Vec<(String, String)>,
+    /// ```text
+    /// --market MUkIEXlH:white=7137… --market MUkIEXlH:draw=9922… --market MUkIEXlH:black=1044…
+    /// ```
+    ///
+    /// Label the legs `white`, `draw` and `black` and nothing further needs configuring: the
+    /// engine's `wdl_white` is already in those terms. Any other label works, but then the mapping
+    /// has to be supplied to the analysis separately.
+    ///
+    /// **One game for now.** A second `game_id` is refused rather than quietly dropped. Asset ids
+    /// are found by hand — see ticket T-03.
+    #[arg(long = "market", value_name = "GAME:LEG=ID", value_parser = crate::market::parse_entry)]
+    pub markets: Vec<(String, String, String)>,
 
     /// Path to the Stockfish binary. Not vendored; install it separately.
     #[arg(long, value_name = "PATH")]
@@ -89,33 +84,33 @@ impl Cli {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_leg_id;
+    use super::Cli;
+    use clap::Parser;
 
     #[test]
-    fn parses_a_labelled_asset_id() {
-        assert_eq!(
-            parse_leg_id("gukesh=7137").unwrap(),
-            ("gukesh".to_string(), "7137".to_string())
-        );
+    fn markets_are_parsed_per_game() {
+        let cli = Cli::parse_from([
+            "chess-to-market",
+            "--market",
+            "MUkIEXlH:white=7137",
+            "--market",
+            "MUkIEXlH:draw=9922",
+        ]);
+        assert_eq!(cli.markets.len(), 2);
+        assert_eq!(cli.markets[0].0, "MUkIEXlH");
+        assert_eq!(cli.markets[0].1, "white");
     }
 
     #[test]
-    fn trims_whitespace() {
-        assert_eq!(
-            parse_leg_id(" draw = 99 ").unwrap(),
-            ("draw".to_string(), "99".to_string())
-        );
+    fn the_old_leg_only_form_is_rejected_with_a_message() {
+        let err = Cli::try_parse_from(["chess-to-market", "--market", "white=7137"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("<game_id>:<leg>=<asset_id>"), "{err}");
     }
 
     #[test]
-    fn rejects_a_bare_id() {
-        // Easy mistake to make, and it would produce market records the analysis refuses to use.
-        assert!(parse_leg_id("7137").is_err());
-    }
-
-    #[test]
-    fn rejects_an_empty_side() {
-        assert!(parse_leg_id("=7137").is_err());
-        assert!(parse_leg_id("gukesh=").is_err());
+    fn no_market_is_fine() {
+        assert!(Cli::parse_from(["chess-to-market"]).markets.is_empty());
     }
 }

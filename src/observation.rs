@@ -94,6 +94,8 @@ pub enum Payload {
     },
     /// A market event from the Polymarket WebSocket. Produced by `sources::polymarket` (T-03).
     Market {
+        /// The game this price is for. A market belongs to a game, never to a round.
+        game_id: String,
         asset_id: String,
         /// The operator's label for this outcome, from `--asset-id <leg>=<id>`.
         ///

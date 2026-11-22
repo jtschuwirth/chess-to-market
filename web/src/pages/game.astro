@@ -23,6 +23,16 @@ import Shell from "../layouts/Shell.astro";
 
   <section class="card" style="margin-bottom:14px">
     <header>
+      <h2>Market</h2>
+      <span class="sub" id="marketsub">best bid / ask per leg, carried forward</span>
+    </header>
+    <div class="legend" id="marketlegend"></div>
+    <div class="chart" id="marketchart"></div>
+    <table id="markettable" style="margin-top:10px"></table>
+  </section>
+
+  <section class="card" style="margin-bottom:14px">
+    <header>
       <h2>Processing latency</h2>
       <span class="sub">move logged → evaluation available · our own lag, not the relay's</span>
     </header>
@@ -56,7 +66,7 @@ import Shell from "../layouts/Shell.astro";
 </Shell>
 
 <script>
-  import { api, watch, type GameDetail, type Market } from "../lib/api";
+  import { api, watch, type GameDetail } from "../lib/api";
   import { drawChart, type Rule, type Series } from "../lib/chart";
   import {
     clock,
@@ -85,7 +95,8 @@ import Shell from "../layouts/Shell.astro";
     c.lastElementChild!.textContent = text;
   };
 
-  function renderChart(g: GameDetail, m: Market) {
+  function renderChart(g: GameDetail) {
+    const m = g.market;
     const series: Series[] = [
       {
         name: "White win",
@@ -168,6 +179,61 @@ import Shell from "../layouts/Shell.astro";
   }
 
   const ms = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}s` : `${Math.round(v)}ms`);
+
+  function renderMarket(g: GameDetail) {
+    const m = g.market;
+    const legs = m.legs.slice(0, LEG_COLORS.length);
+    const series: Series[] = [];
+    legs.forEach((leg, i) => {
+      const pts = m.series[leg] ?? [];
+      series.push({
+        name: `${leg} ask`,
+        color: LEG_COLORS[i],
+        points: pts.filter((p) => p.ask !== null).map((p) => ({ x: p.t, y: p.ask! })),
+      });
+      series.push({
+        name: `${leg} bid`,
+        color: LEG_COLORS[i],
+        dashed: true,
+        points: pts.filter((p) => p.bid !== null).map((p) => ({ x: p.t, y: p.bid! })),
+      });
+    });
+
+    $("marketlegend").innerHTML = legs
+      .map(
+        (leg, i) =>
+          `<span class="key" style="color:${LEG_COLORS[i]}"><span class="swatch"></span>${esc(leg)} ask</span>
+           <span class="key" style="color:${LEG_COLORS[i]}"><span class="swatch dashed"></span>${esc(leg)} bid</span>`,
+      )
+      .join("");
+
+    drawChart($("marketchart"), {
+      series,
+      yDomain: [0, 1],
+      height: 200,
+      fmtY: (n) => n.toFixed(2),
+      fmtX: (n) => secs(n),
+      labelEnds: false,
+    });
+
+    const rows = Object.entries(m.last);
+    $("markettable").innerHTML = rows.length
+      ? `<thead><tr><th>Leg</th><th class="num">Bid</th><th class="num">Ask</th>
+         <th class="num">Mid</th><th class="num">Last seen</th></tr></thead><tbody>${rows
+           .map(
+             ([leg, p]) =>
+               `<tr><td class="mono">${esc(leg)}</td><td class="num">${price(p.bid)}</td>
+                <td class="num">${price(p.ask)}</td><td class="num">${price(p.mid)}</td>
+                <td class="num">${secs(p.t)}</td></tr>`,
+           )
+           .join("")}</tbody>`
+      : `<tbody><tr><td class="empty">no market for this game — pass
+         --market ${esc(g.game_id)}:white=&lt;asset id&gt; to the Rust</td></tr></tbody>`;
+
+    $("marketsub").textContent = m.games.length
+      ? `best bid / ask per leg · ${m.games.length} priced game${m.games.length > 1 ? "s" : ""} in this log`
+      : "best bid / ask per leg, carried forward";
+  }
 
   function renderLatency(g: GameDetail) {
     const l = g.latency;
@@ -287,7 +353,7 @@ import Shell from "../layouts/Shell.astro";
     if (busy) return;
     busy = true;
     try {
-      const [g, m] = await Promise.all([api.game(id, scope()), api.market(scope())]);
+      const g = await api.game(id, scope());
       conn(true, `live · rev ${g.revision}`);
       $("gid").textContent = g.title;
 
@@ -320,7 +386,8 @@ import Shell from "../layouts/Shell.astro";
       const link = $("lichess") as HTMLAnchorElement;
       link.classList.toggle("hidden", !g.url);
       if (g.url) link.href = g.url;
-      renderChart(g, m);
+      renderChart(g);
+      renderMarket(g);
       renderLatency(g);
       renderSignals(g);
       renderChanges(g);

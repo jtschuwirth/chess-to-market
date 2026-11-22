@@ -121,7 +121,7 @@ def generate(depths: tuple[int, ...] = (12, 16)) -> list[str]:
 
     for secs, leg, bid, ask in TAPE:
         events.append((secs * 1000, {
-            "source": "market", "asset_id": f"synth-{leg}", "leg": leg,
+            "source": "market", "game_id": GAME_ID, "asset_id": f"synth-{leg}", "leg": leg,
             "event_type": "price_change", "best_bid": bid, "best_ask": ask,
             "raw": {"event_type": "price_change", "synthetic": True},
         }))

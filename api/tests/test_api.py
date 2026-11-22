@@ -456,3 +456,31 @@ class TestProcessingLatency(unittest.TestCase):
         lat = self.latency([self.ply(1000, 1), self.ply(2000, 2)])
         self.assertEqual(lat["summary"]["n"], 0)
         self.assertEqual(lat["summary"]["searches"], [])
+
+
+@unittest.skipIf(TestClient is None, "fastapi not installed")
+class TestMarketPerGame(unittest.TestCase):
+    """A market belongs to a game. The overview says which boards have one; the game view has it."""
+
+    def setUp(self) -> None:
+        self.client = TestClient(create_app(Settings(log_path=str(write_log(generate())))))
+
+    def test_the_game_carries_its_own_market(self) -> None:
+        body = self.client.get("/api/games/synth-g14").json()
+        self.assertEqual(body["market"]["game_id"], "synth-g14")
+        self.assertTrue(body["market"]["legs"])
+        self.assertTrue(body["market"]["last"])
+
+    def test_a_game_row_says_whether_it_is_priced(self) -> None:
+        rows = self.client.get("/api/games").json()["games"]
+        self.assertTrue(rows[0]["has_market"])
+
+    def test_asking_for_another_game_gives_an_empty_tape(self) -> None:
+        body = self.client.get("/api/market?game_id=not-a-game").json()
+        self.assertEqual(body["legs"], [])
+        self.assertEqual(body["games"], ["synth-g14"], "but it still says which games are priced")
+
+    def test_omitting_the_game_returns_everything_priced(self) -> None:
+        body = self.client.get("/api/market").json()
+        self.assertIsNone(body["game_id"])
+        self.assertTrue(body["legs"])

@@ -115,9 +115,29 @@ class TestSignals(unittest.TestCase):
         self.assertEqual(res.signals[0].ply, 5)
 
     def test_no_positions_without_a_leg_mapping(self):
+        # The reference log labels its legs with player names, so the engine's white/black cannot
+        # be matched to them without a mapping — and no position is opened.
         res = run(self.records)
         self.assertEqual(res.positions, [])
-        self.assertIsNone(res.signals[0].room)
+
+    def test_the_draw_leg_needs_no_mapping(self):
+        # "draw" means the same thing whoever is playing, so it lines up with the engine's draw
+        # probability on its own. Player legs still need the mapping.
+        res = run(self.records)
+        self.assertIsNotNone(res.signals[0].room, "the draw leg alone gives a comparison")
+
+    def test_side_named_legs_need_no_mapping_at_all(self):
+        # The convention the CLI now encourages: --market <game>:white=<id>.
+        records = [
+            replace(r, payload={**r.payload, "leg": {"ding": "white", "gukesh": "black"}.get(
+                r.payload.get("leg"), r.payload.get("leg"))})
+            if r.source == "market" else r
+            for r in self.records
+        ]
+        res = run(records)
+        room = res.signals[0].room
+        self.assertIsNotNone(room)
+        self.assertGreater(room, 0.0)
 
     def test_positions_appear_once_legs_are_mapped(self):
         cfg = replace(PipelineConfig(), white_leg="ding", black_leg="gukesh",
@@ -205,3 +225,93 @@ class TestSpan(unittest.TestCase):
         ])
         # An hour of wall time, even though the monotonic clocks say otherwise.
         self.assertAlmostEqual(run(recs).health.span_s, 3600.0, places=1)
+
+
+class TestMarketsArePerGame(unittest.TestCase):
+    """A tournament relays thirty boards; each priced game has its own market."""
+
+    def mkt(self, mono, game_id, leg, bid, ask):
+        return json.dumps({
+            "mono_ms": mono, "wall_unix_ms": 1_764_000_000_000 + mono,
+            "payload": {"source": "market", "game_id": game_id, "asset_id": f"a-{leg}",
+                        "leg": leg, "event_type": "price_change",
+                        "best_bid": bid, "best_ask": ask},
+        })
+
+    def test_the_tape_keeps_each_games_prices_apart(self):
+        recs = to_records([
+            self.mkt(1000, "g1", "white", 0.40, 0.42),
+            self.mkt(2000, "g2", "white", 0.80, 0.82),
+        ])
+        tape = build_tape(recs)
+        self.assertEqual([t["game_id"] for t in tape], ["g1", "g2"])
+        self.assertEqual([t["ask"] for t in tape], [0.42, 0.82])
+
+    def test_one_leg_carried_forward_per_game_not_globally(self):
+        # The bug this guards: g2's bid filling in g1's missing side, so a board is compared
+        # against a price from another board.
+        recs = to_records([
+            self.mkt(1000, "g1", "white", 0.40, None),
+            self.mkt(2000, "g2", "white", 0.80, 0.82),
+            self.mkt(3000, "g1", "white", None, 0.45),
+        ])
+        tape = build_tape(recs)
+        g1 = [t for t in tape if t["game_id"] == "g1"]
+        self.assertEqual(g1[0]["ask"], None, "g1 had no ask yet")
+        self.assertEqual(g1[-1]["bid"], 0.40, "its own earlier bid, not g2's")
+        self.assertEqual(g1[-1]["ask"], 0.45)
+
+    def test_tape_for_selects_one_game(self):
+        from analysis.pipeline import tape_for
+
+        tape = build_tape(to_records([
+            self.mkt(1000, "g1", "white", 0.40, 0.42),
+            self.mkt(2000, "g2", "white", 0.80, 0.82),
+        ]))
+        self.assertEqual([t["game_id"] for t in tape_for(tape, "g1")], ["g1"])
+
+    def test_a_market_from_before_the_field_existed_is_offered_to_every_game(self):
+        from analysis.pipeline import tape_for
+
+        tape = build_tape(to_records([self.mkt(1000, None, "white", 0.40, 0.42)]))
+        self.assertEqual(len(tape_for(tape, "anything")), 1)
+
+    def test_a_signal_sees_only_its_own_games_market(self):
+        base = 1_764_000_000_000
+
+        def ev(mono, game_id, wdl, ply):
+            return json.dumps({
+                "mono_ms": mono, "wall_unix_ms": base + mono,
+                "payload": {"source": "eval", "game_id": game_id, "ply": ply, "depth": 16,
+                            "wdl_white": list(wdl)},
+            })
+
+        recs = to_records([
+            # g2's market is wildly off; g1 has none at all.
+            self.mkt(500, "g2", "white", 0.01, 0.02),
+            ev(1000, "g1", (100, 800, 100), 10),
+            ev(2000, "g1", (950, 40, 10), 11),
+        ])
+        res = run(recs)
+        self.assertEqual(len(res.signals), 1)
+        self.assertIsNone(res.signals[0].room, "g2's price must not reach g1")
+
+
+class TestMarketDiagnoses(unittest.TestCase):
+    def test_priced_games_are_named(self):
+        recs = to_records([json.dumps({
+            "mono_ms": 1, "wall_unix_ms": 1_764_000_000_001,
+            "payload": {"source": "market", "game_id": "g1", "asset_id": "a", "leg": "white",
+                        "event_type": "book", "best_bid": 0.4, "best_ask": 0.42},
+        })])
+        self.assertIn("priced games: ['g1']", run(recs).health.report())
+
+    def test_a_market_with_no_game_is_called_out(self):
+        # Without a game_id a price reaches every board, which is silently wrong rather than
+        # obviously wrong.
+        recs = to_records([json.dumps({
+            "mono_ms": 1, "wall_unix_ms": 1_764_000_000_001,
+            "payload": {"source": "market", "asset_id": "a", "leg": "white",
+                        "event_type": "book", "best_bid": 0.4, "best_ask": 0.42},
+        })])
+        self.assertIn("no `game_id`", run(recs).health.report())

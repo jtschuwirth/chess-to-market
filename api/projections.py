@@ -17,6 +17,7 @@ from typing import Any
 from analysis.config_defaults import PipelineConfig
 from analysis.observations import Record
 from analysis.pipeline import SignalOut
+from analysis.pipeline import tape_for as pipeline_tape_for
 from analysis.triggers import StateTracker
 
 from .store import Snapshot
@@ -179,6 +180,7 @@ def games(snap: Snapshot, cfg: PipelineConfig) -> list[dict[str, Any]]:
     """One row per game: enough to render a board list and to spot a dead feed."""
     out = []
     headers = _headers(snap)
+    priced = {t["game_id"] for t in snap.result.tape if t.get("game_id")}
     for gid in game_ids(snap):
         plies = [r for r in snap.records if r.source == "ply" and r.game_id == gid]
         evals = _evals_of(snap, gid, cfg.eval_depth)
@@ -203,6 +205,7 @@ def games(snap: Snapshot, cfg: PipelineConfig) -> list[dict[str, Any]]:
                 else last_ply.payload.get("move_unix_ms"),
                 "wdl_white": None if wdl is None else [round(v, 4) for v in wdl],
                 "last_seen_t": max([snap.rel(r) for r in plies[-1:] + evals[-1:]] or [0.0]),
+                "has_market": gid in priced,
                 "pnl_usd": round(sum(s.position.pnl_usd for s in sigs if s.position), 4),
             }
         )
@@ -229,13 +232,21 @@ def game(snap: Snapshot, game_id: str, cfg: PipelineConfig) -> dict[str, Any] | 
         "state_changes": changes,
         "signals": [_signal_point(snap, s) for s in sigs],
         "latency": latency(snap, game_id),
+        "market": market(snap, game_id),
     }
 
 
-def market(snap: Snapshot) -> dict[str, Any]:
-    """The two-sided tape, per leg. `bid`/`ask` carried forward from the last known touch."""
+def market(snap: Snapshot, game_id: str | None = None) -> dict[str, Any]:
+    """The two-sided tape, per leg, for one game.
+
+    A market belongs to a game, not to a round: a tournament can have several priced boards at
+    once, and merging them would put one board's price beside another board's evaluation. Omitting
+    `game_id` returns every priced game, which is what the overview needs to say which boards have
+    a market at all.
+    """
+    tape = snap.result.tape if game_id is None else pipeline_tape_for(snap.result.tape, game_id)
     series: dict[str, list[dict[str, Any]]] = {}
-    for t in snap.result.tape:
+    for t in tape:
         series.setdefault(t["leg"], []).append(
             {
                 "t": round(t["t"] - snap.t0_wall, 3) if snap.records else 0.0,
@@ -246,9 +257,11 @@ def market(snap: Snapshot) -> dict[str, Any]:
             }
         )
     return {
+        "game_id": game_id,
         "legs": sorted(series),
         "series": series,
         "last": {leg: pts[-1] for leg, pts in series.items() if pts},
+        "games": sorted({t["game_id"] for t in snap.result.tape if t.get("game_id")}),
     }
 
 

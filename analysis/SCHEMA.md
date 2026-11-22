@@ -63,18 +63,27 @@ Lichess's lag, not the market's.
 ## `market` — a Polymarket event (T-03)
 
 ```json
-{"source": "market", "asset_id": "7137...", "leg": "gukesh", "event_type": "price_change",
- "best_bid": 0.41, "best_ask": 0.44, "raw": {"...": "..."}}
+{"source": "market", "game_id": "MUkIEXlH", "asset_id": "7137...", "leg": "white",
+ "event_type": "price_change", "best_bid": 0.41, "best_ask": 0.44, "raw": {"...": "..."}}
 ```
 
-`leg` is the **operator's label** for the outcome, and it must be supplied — Python cannot infer which
-outcome an `asset_id` is. So the Rust CLI takes labelled ids:
+**A market belongs to a game, not to a round.** A tournament relays thirty boards and each priced
+game has its own market, so `game_id` is what ties a price to the position it is a price *for*.
+Without it, a round with two priced boards is two tapes in one bucket.
+
+`leg` is the **operator's label** for the outcome, and it must be supplied — nothing downstream can
+infer which outcome an `asset_id` refers to. So the Rust CLI takes a game, a side and an id:
 
 ```
---asset-id gukesh=7137... --asset-id draw=9922... --asset-id sindarov=1044...
+--market MUkIEXlH:white=7137... --market MUkIEXlH:draw=9922... --market MUkIEXlH:black=1044...
 ```
 
-Conventional leg names: a player name, or `draw`. Keep them stable within a run.
+Label the legs `white`, `draw` and `black` and the analysis needs no further configuration: it knows
+which player is which from the `game` record, and the engine's `wdl_white` is already in those
+terms. Any other label works too, but then the mapping has to be supplied separately.
+
+**One market at a time, for now.** The record format and the analysis are per game throughout; the
+CLI currently refuses a second `game_id` rather than pretending to subscribe to both.
 
 `event_type` passes Polymarket's own value through (`book`, `price_change`, `last_trade_price`,
 `tick_size_change`). `best_bid`/`best_ask` are the touch where known, else `null`.
@@ -140,7 +149,7 @@ seconds of streaming with plies flowing, 23 results and 6 still `*`, every `url`
 ## Rust status: ✅ applied (12 Nov 2026)
 
 `src/observation.rs` now matches this contract — `move_unix_ms`, `leg`, `wdl_white`, `search_ms`,
-`lines`, and a `Signal` variant. The CLI takes `--asset-id <leg>=<id>` and `--multipv` (default 4).
+`lines`, and a `Signal` variant. The CLI takes `--market <game>:<leg>=<id>` and `--multipv` (default 4).
 `cargo test` covers all of it (10 tests), and the fixture is a worked example of this format.
 
 Cross-checked both directions:

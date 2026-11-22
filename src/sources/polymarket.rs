@@ -19,8 +19,10 @@
 //!
 //! Events are tagged by `event_type`: `book`, `price_change`, `last_trade_price`,
 //! `tick_size_change`. Send each on as a [`Payload::Market`](crate::Payload::Market), keeping the
-//! raw frame **and the operator's `leg` label** — the analysis refuses market records without one,
-//! because nothing downstream can infer which outcome an asset id refers to.
+//! raw frame, the **`game_id` the market belongs to**, and the operator's **`leg` label** — the
+//! analysis refuses market records without both, because nothing downstream can infer which game
+//! or which outcome an asset id refers to. [`Market::leg_of`](crate::market::Market::leg_of) maps
+//! an incoming `asset_id` back to its leg.
 //!
 //! **The heartbeat is mandatory:** send the *text frame* `PING` every 10 seconds — the literal
 //! string, not a protocol ping frame — and the server replies `PONG`. Miss it and you are dropped.
@@ -51,16 +53,15 @@
 use anyhow::Result;
 use tokio::sync::mpsc::Sender;
 
+use crate::market::Market;
 use crate::observation::{Clock, Observation};
 
-pub async fn run(asset_ids: &[(String, String)], clock: Clock, tx: Sender<Observation>) -> Result<()> {
-    let legs = asset_ids
-        .iter()
-        .map(|(leg, id)| format!("{leg}={id}"))
-        .collect::<Vec<_>>()
-        .join(" ");
+pub async fn run(market: &Market, clock: Clock, tx: Sender<Observation>) -> Result<()> {
     let _ = tx
-        .send(clock.note(format!("polymarket: not implemented (T-03). assets: {legs}")))
+        .send(clock.note(format!(
+            "polymarket: not implemented (T-03). market: {}",
+            market.describe()
+        )))
         .await;
     Ok(())
 }

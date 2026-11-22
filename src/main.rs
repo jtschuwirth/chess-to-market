@@ -9,6 +9,7 @@ use chess_to_market::pgn::Position;
 use chess_to_market::Observation;
 use chess_to_market::broadcast::{round_meta, RoundMeta};
 use chess_to_market::cli::Cli;
+use chess_to_market::market;
 use chess_to_market::observation::Clock;
 use chess_to_market::sink::JsonlSink;
 use chess_to_market::sources;
@@ -91,15 +92,18 @@ async fn main() -> Result<()> {
             warn!("no --round-id: no chess feed");
         }
 
-        if !cli.asset_ids.is_empty() {
-            let asset_ids = cli.asset_ids.clone();
-            let tx = tx.clone();
-            sources.spawn(async move {
-                sources::polymarket::run(&asset_ids, clock, tx).await?;
-                Ok::<_, anyhow::Error>("polymarket: finished".to_string())
-            });
-        } else {
-            warn!("no --asset-id: no market feed");
+        // Refused rather than dropped: a run that quietly watched one of two markets would
+        // produce a log that looks complete and is not.
+        match market::single(&cli.markets)? {
+            Some(market) => {
+                info!("market: {}", market.describe());
+                let tx = tx.clone();
+                sources.spawn(async move {
+                    sources::polymarket::run(&market, clock, tx).await?;
+                    Ok::<_, anyhow::Error>("polymarket: finished".to_string())
+                });
+            }
+            None => warn!("no --market: no market feed"),
         }
 
         if let Some(engine_path) = cli.engine_path.clone() {

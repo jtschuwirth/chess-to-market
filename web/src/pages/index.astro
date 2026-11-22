@@ -11,20 +11,9 @@ import Shell from "../layouts/Shell.astro";
 
   <section class="grid tiles" style="margin:16px 0" id="tiles"></section>
 
-  <section class="grid cols-2" style="margin-bottom:14px">
-    <div class="card">
-      <header><h2>Feed health</h2><span class="sub" id="healthsub"></span></header>
-      <pre class="diagnosis" id="health">loading…</pre>
-    </div>
-    <div class="card">
-      <header>
-        <h2>Market tape</h2>
-        <span class="sub">best bid / ask per leg, carried forward</span>
-      </header>
-      <div class="legend" id="marketlegend"></div>
-      <div class="chart" id="marketchart"></div>
-      <table id="markettable" style="margin-top:10px"></table>
-    </div>
+  <section class="card" style="margin-bottom:14px">
+    <header><h2>Feed health</h2><span class="sub" id="healthsub"></span></header>
+    <pre class="diagnosis" id="health">loading…</pre>
   </section>
 
   <section class="card" style="margin-bottom:14px">
@@ -121,54 +110,6 @@ import Shell from "../layouts/Shell.astro";
     $("healthsub").textContent = d.missing ? `log not found: ${d.config.log_path}` : d.config.log_path;
   }
 
-  function renderMarket(d: Dashboard) {
-    const legs = d.market.legs.slice(0, SERIES.length);
-    const series: Series[] = [];
-    legs.forEach((leg, i) => {
-      const pts = d.market.series[leg] ?? [];
-      series.push({
-        name: leg,
-        color: SERIES[i],
-        points: pts.filter((p) => p.ask !== null).map((p) => ({ x: p.t, y: p.ask! })),
-      });
-      series.push({
-        name: `${leg} bid`,
-        color: SERIES[i],
-        dashed: true,
-        points: pts.filter((p) => p.bid !== null).map((p) => ({ x: p.t, y: p.bid! })),
-      });
-    });
-    $("marketlegend").innerHTML = legs.length
-      ? legs
-          .map(
-            (leg, i) =>
-              `<span class="key" style="color:${SERIES[i]}"><span class="swatch"></span>${esc(leg)} ask</span>
-               <span class="key" style="color:${SERIES[i]}"><span class="swatch dashed"></span>${esc(leg)} bid</span>`,
-          )
-          .join("")
-      : "";
-    drawChart($("marketchart"), {
-      series,
-      yDomain: [0, 1],
-      height: 220,
-      fmtY: (n) => n.toFixed(2),
-      labelEnds: false,
-    });
-
-    const rows = Object.entries(d.market.last);
-    $("markettable").innerHTML = rows.length
-      ? `<thead><tr><th>Leg</th><th class="num">Bid</th><th class="num">Ask</th>
-         <th class="num">Mid</th><th class="num">Last seen</th></tr></thead><tbody>${rows
-           .map(
-             ([leg, p]) =>
-               `<tr><td class="mono">${esc(leg)}</td><td class="num">${price(p.bid)}</td>
-                <td class="num">${price(p.ask)}</td><td class="num">${price(p.mid)}</td>
-                <td class="num">${secs(p.t)}</td></tr>`,
-           )
-           .join("")}</tbody>`
-      : `<tbody><tr><td class="empty">no market records — pass --asset-id &lt;leg&gt;=&lt;id&gt; to the Rust</td></tr></tbody>`;
-  }
-
   function gameCard(g: GameRow): string {
     const w = g.wdl_white;
     const bar = w
@@ -188,6 +129,7 @@ import Shell from "../layouts/Shell.astro";
     return `<a class="card gamecard" href="${linkFor(g.game_id)}">
       <div class="row">
         <strong style="font-size:.9rem">${esc(g.title)}</strong>
+        ${g.has_market ? `<span class="badge good"><span class="dot"></span>market</span>` : ""}
         <span class="muted mono" style="margin-left:auto;font-size:.72rem">${esc(g.game_id)}</span>
       </div>
       <div class="row">
@@ -210,8 +152,11 @@ import Shell from "../layouts/Shell.astro";
 
   function renderGames(d: Dashboard) {
     const done = d.games.filter((g) => g.finished === true).length;
+    const priced = d.games.filter((g) => g.has_market).length;
     $("gamesub").textContent =
-      `${d.games.length} in the log` + (done ? ` · ${done} finished` : "");
+      `${d.games.length} in the log` +
+      (done ? ` · ${done} finished` : "") +
+      (priced ? ` · ${priced} priced` : " · none priced");
     $("games").innerHTML = d.games.length
       ? d.games.slice().sort(byInterest).map(gameCard).join("")
       : `<p class="empty">no games yet — no ply records in the log</p>`;
@@ -319,7 +264,6 @@ import Shell from "../layouts/Shell.astro";
       conn(!d.missing, d.missing ? "log missing" : `live · rev ${d.revision}`);
       renderTiles(d);
       renderHealth(d);
-      renderMarket(d);
       renderGames(d);
       renderSignals(d);
       renderFeed(d);

@@ -82,6 +82,7 @@ export type GameRow = GameInfo & {
   last_move_unix_ms: number | null;
   wdl_white: [number, number, number] | null;
   last_seen_t: number;
+  has_market: boolean;
   pnl_usd: number;
 };
 
@@ -144,6 +145,8 @@ export type TapePoint = {
 };
 
 export type Market = {
+  game_id: string | null;
+  games: string[];
   legs: string[];
   series: Record<string, TapePoint[]>;
   last: Record<string, TapePoint>;
@@ -211,6 +214,7 @@ export type Latency = {
 export type GameDetail = GameInfo & {
   revision: number;
   latency: Latency;
+  market: Market;
   game_id: string;
   state: string | null;
   decision_depth: number | null;
@@ -248,7 +252,10 @@ export const api = {
     get<Dashboard>(`/dashboard${qs(scope, { recent_limit: limit })}`),
   game: (id: string, scope: Scope = {}) =>
     get<GameDetail>(`/games/${encodeURIComponent(id)}${qs(scope)}`),
-  market: (scope: Scope = {}) => get<Market & { revision: number }>(`/market${qs(scope)}`),
+  market: (scope: Scope = {}, gameId?: string) =>
+    get<Market & { revision: number }>(
+      `/market${qs(scope, gameId ? { game_id: gameId } : {})}`,
+    ),
   revision: (scope: Scope = {}) => get<Meta>(`/revision${qs(scope)}`),
 };
 

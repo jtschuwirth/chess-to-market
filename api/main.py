@@ -155,11 +155,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"no game {game_id!r} in the log")
         return {"log": chosen, "revision": snap.revision} | body
 
-    @app.get("/api/market", summary="The two-sided tape, per leg")
-    def get_market(log: str | None = LOG) -> dict[str, Any]:
+    @app.get("/api/market", summary="The two-sided tape of one game")
+    def get_market(
+        game_id: str | None = Query(None, description="Omit for every priced game at once."),
+        log: str | None = LOG,
+    ) -> dict[str, Any]:
+        """A market belongs to a game, not to a round."""
         chosen, store = pick(log)
         snap = store.snapshot()
-        return {"log": chosen, "revision": snap.revision} | proj.market(snap)
+        return {"log": chosen, "revision": snap.revision} | proj.market(snap, game_id)
 
     @app.get("/api/signals", summary="Triggers, confidence, and hypothetical positions")
     def get_signals(log: str | None = LOG) -> dict[str, Any]:

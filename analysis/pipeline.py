@@ -52,6 +52,8 @@ class Health:
     evals_without_wdl: int = 0
     evals_with_lines: int = 0
     legs_seen: set[str] = field(default_factory=set)
+    market_games: set[str] = field(default_factory=set)
+    market_without_game: int = 0
     depths_seen: set[int] = field(default_factory=set)
     notes: list[str] = field(default_factory=list)
     suppressed_by_cooldown: int = 0
@@ -72,12 +74,21 @@ class Health:
             out.append("!! eval records without wdl_white — set UCI_ShowWDL and normalise to white")
         if not self.counts.get("market"):
             out.append("!! no market records — the Polymarket source is not producing (T-03)")
+        elif self.market_games:
+            out.append(f"priced games: {sorted(self.market_games)}")
+        if self.market_without_game:
+            out.append(
+                f"!  {self.market_without_game} market records have no `game_id` — a market "
+                "belongs to a game, and without one its prices reach every board"
+            )
         if not self.counts.get("ply"):
             out.append("!! no ply records — the Lichess source is not producing (T-02)")
         if self.counts.get("eval") and not self.evals_with_lines:
             out.append("!  evals have no `lines` — findability will abstain; needs MultiPV >= 4")
         if self.counts.get("market") and not self.legs_seen:
-            out.append("!  market records have no `leg` — pass --asset-id <leg>=<id> in the Rust CLI")
+            out.append(
+                "!  market records have no `leg` — pass --market <game>:<leg>=<id> in the Rust CLI"
+            )
         return "\n".join(out)
 
 
@@ -105,16 +116,21 @@ def build_tape(records: list[Record]) -> list[dict[str, Any]]:
     """Market records -> a two-sided tape the paper model can fill against.
 
     Carries the last known touch forward: a `price_change` on one side does not invalidate the other.
+
+    Every entry carries its `game_id`, because **a market belongs to a game, not to a round**. A
+    tournament relaying thirty boards can have several priced games at once, and merging their
+    prices into one tape would compare an engine's verdict on one board against a price from
+    another.
     """
     tape: list[dict[str, Any]] = []
-    last: dict[str, dict[str, float]] = {}
+    last: dict[tuple[str | None, str], dict[str, float]] = {}
     for r in records:
         if r.source != "market":
             continue
         leg = r.payload.get("leg")
         if not leg:
             continue
-        d = last.setdefault(leg, {})
+        d = last.setdefault((r.game_id, leg), {})
         for side, key in (("ask", "best_ask"), ("bid", "best_bid")):
             v = r.payload.get(key)
             if v is not None:
@@ -122,8 +138,17 @@ def build_tape(records: list[Record]) -> list[dict[str, Any]]:
         if not d:
             continue
         mid = (d.get("ask", d.get("bid")) + d.get("bid", d.get("ask"))) / 2
-        tape.append({"leg": leg, "t": r.ts, "ask": d.get("ask"), "bid": d.get("bid"), "p": mid})
+        tape.append({
+            "game_id": r.game_id, "leg": leg, "t": r.ts,
+            "ask": d.get("ask"), "bid": d.get("bid"), "p": mid,
+        })
     return tape
+
+
+def tape_for(tape: list[dict[str, Any]], game_id: str | None) -> list[dict[str, Any]]:
+    """One game's tape. A market with no `game_id` is from before the field existed, so it is
+    offered to every game rather than silently dropped."""
+    return [t for t in tape if t.get("game_id") in (game_id, None)]
 
 
 def _candidates(rec: Record) -> list[Candidate]:
@@ -160,8 +185,13 @@ def run(records: list[Record], cfg: PipelineConfig | None = None) -> Result:
                 h.evals_without_wdl += 1
             if r.lines():
                 h.evals_with_lines += 1
-        elif r.source == "market" and r.payload.get("leg"):
-            h.legs_seen.add(r.payload["leg"])
+        elif r.source == "market":
+            if r.payload.get("leg"):
+                h.legs_seen.add(r.payload["leg"])
+            if r.game_id:
+                h.market_games.add(r.game_id)
+            else:
+                h.market_without_game += 1
         elif r.source == "note":
             h.notes.append(str(r.payload.get("message")))
     if records:
@@ -201,16 +231,19 @@ def run(records: list[Record], cfg: PipelineConfig | None = None) -> Result:
 
         f = findability(_candidates(r), cfg.findability)
 
-        implied: dict[str, float] = {}
-        room = None
-        if cfg.white_leg and cfg.black_leg:
-            implied = implied_legs(wdl[0], wdl[1], wdl[2], cfg.white_leg, cfg.black_leg)
-            market_now = {}
-            for t in res.tape:
-                if t["t"] <= r.ts and t.get("ask") is not None:
-                    market_now[t["leg"]] = t["ask"]
-            gaps = [abs(implied[leg] - market_now[leg]) for leg in implied if leg in market_now]
-            room = max(gaps) if gaps else None
+        # Only this game's prices. Legs named `white` / `draw` / `black` need no configuration,
+        # since `wdl_white` is already in those terms; `cfg` overrides for logs that label legs
+        # with player names instead.
+        game_tape = tape_for(res.tape, r.game_id)
+        implied = implied_legs(
+            wdl[0], wdl[1], wdl[2], cfg.white_leg or "white", cfg.black_leg or "black"
+        )
+        market_now = {}
+        for t in game_tape:
+            if t["t"] <= r.ts and t.get("ask") is not None:
+                market_now[t["leg"]] = t["ask"]
+        gaps = [abs(implied[leg] - market_now[leg]) for leg in implied if leg in market_now]
+        room = max(gaps) if gaps else None
 
         sig = SignalOut(
             game_id=r.game_id, ply=r.ply, san=res.ply_index.get((r.game_id, r.ply)),
@@ -218,8 +251,8 @@ def run(records: list[Record], cfg: PipelineConfig | None = None) -> Result:
             findability_note=f.factors[0].note if f.factors else "",
             room=room, implied=implied,
         )
-        if implied and cfg.resolved_leg is not None:
-            sig.position = simulate(r.ts, cfg.latency_s, implied, res.tape,
+        if market_now and cfg.resolved_leg is not None:
+            sig.position = simulate(r.ts, cfg.latency_s, implied, game_tape,
                                     cfg.resolved_leg, cfg.paper)
         res.signals.append(sig)
 

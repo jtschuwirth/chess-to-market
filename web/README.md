@@ -31,8 +31,8 @@ build time; the API already allows the dev origins and takes `--origin` for othe
 
 | Page | What it answers |
 |---|---|
-| `/` | Is every producer alive? Which games exist, who is winning, what fired? |
-| `/game?id=<game_id>` | For one game: engine probabilities against market price over time, signals, state changes, and every move with its reconstructed time. |
+| `/` | Is every producer alive? Which games exist, who is winning, which are priced, what fired? |
+| `/game?id=<game_id>` | For one game: engine probabilities against market price over time, that game's market tape, our own processing latency, signals, state changes, and every move with its reconstructed time. |
 
 Both poll `/api/events` (server-sent) and fall back to polling `/api/revision`. The revision changes
 only when the log grows, so an idle run costs one small request per tick.

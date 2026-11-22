@@ -36,7 +36,7 @@ is hypothetical, computed from recorded prices, and the payload says so (`"hypot
 | `/api/events` | server-sent revision ticks |
 | `/api/health` | counts, diagnoses, schema and ordering problems |
 | `/api/games` · `/api/games/{id}` | per-game rows · plies, evaluations, state changes, signals |
-| `/api/market` | the two-sided tape per leg |
+| `/api/market` | one game's two-sided tape (`?game_id=`), or every priced game |
 | `/api/signals` | triggers, confidence, hypothetical positions |
 | `/api/recent` | the raw tail |
 | `/api/runs` · `/api/config` | the process runs in the file · the settings in force |
@@ -47,6 +47,16 @@ says which log it answered from. There is no run parameter — the whole file is
 
 `?log=` is the one place a request chooses a path, so only paths `/api/logs` already lists are
 accepted — which rules out traversal without having to reason about `..`.
+
+## Markets are per game
+
+A market belongs to a **game**, not to a round: a tournament relays thirty boards and each priced
+game has its own market. The tape is keyed by `game_id` throughout, `/api/games/{id}` carries that
+game's market, and a game row says `has_market` so the overview can mark the priced boards.
+
+Legs labelled `white`, `draw` and `black` need no further configuration — the engine's `wdl_white`
+is already in those terms. Player-name legs still need `--white` / `--black`, except `draw`, which
+means the same thing whoever is playing and lines up on its own.
 
 ## Game headers
 
