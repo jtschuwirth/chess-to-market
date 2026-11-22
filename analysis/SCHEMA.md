@@ -82,8 +82,11 @@ Label the legs `white`, `draw` and `black` and the analysis needs no further con
 which player is which from the `game` record, and the engine's `wdl_white` is already in those
 terms. Any other label works too, but then the mapping has to be supplied separately.
 
-**One market at a time, for now.** The record format and the analysis are per game throughout; the
-CLI currently refuses a second `game_id` rather than pretending to subscribe to both.
+**Markets can be added and removed while the program runs.** `--market` seeds the set; after that
+the file `<log>.markets.json` beside the round's log is the desired state, and the dashboard writes
+it. The socket reconciles without reconnecting — `{"assets_ids": [...], "operation": "subscribe"}`
+on the open connection. `--market` still refuses a second game, because a *starting* set of one is
+the policy; the file has no such limit.
 
 `event_type` passes Polymarket's own value through (`book`, `price_change`, `last_trade_price`,
 `tick_size_change`). `best_bid`/`best_ask` are the touch where known, else `null`.

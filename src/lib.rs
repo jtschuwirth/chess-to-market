@@ -16,6 +16,7 @@
 
 pub mod broadcast;
 pub mod cli;
+pub mod control;
 pub mod market;
 pub mod fetch;
 pub mod observation;

@@ -9,7 +9,8 @@ use chess_to_market::pgn::Position;
 use chess_to_market::Observation;
 use chess_to_market::broadcast::{round_meta, RoundMeta};
 use chess_to_market::cli::Cli;
-use chess_to_market::market;
+use chess_to_market::control;
+use chess_to_market::market::{self, Market};
 use chess_to_market::observation::Clock;
 use chess_to_market::sink::JsonlSink;
 use chess_to_market::sources;
@@ -92,19 +93,35 @@ async fn main() -> Result<()> {
             warn!("no --round-id: no chess feed");
         }
 
-        // Refused rather than dropped: a run that quietly watched one of two markets would
-        // produce a log that looks complete and is not.
-        match market::single(&cli.markets)? {
-            Some(market) => {
-                info!("market: {}", market.describe());
-                let tx = tx.clone();
-                sources.spawn(async move {
-                    sources::polymarket::run(&market, clock, tx).await?;
-                    Ok::<_, anyhow::Error>("polymarket: finished".to_string())
-                });
-            }
-            None => warn!("no --market: no market feed"),
+        // Markets come from two places: the command line, and a control file the dashboard
+        // writes while the program runs. The file is desired state, so it wins — the flag is the
+        // starting point, not a separate list to merge.
+        let control_path = control::path_for(&out);
+        let from_flags = market::group(&cli.markets);
+        let (market_tx, market_rx) = mpsc::channel::<Vec<Market>>(8);
+
+        if !from_flags.is_empty() {
+            info!("market: {}", sources::polymarket::describe(&from_flags));
         }
+        info!("market control: {}", control_path.display());
+
+        // The flags seed the file the first time; after that the file is the only source, so the
+        // dashboard can disable a market that was started from the command line.
+        if control::seed(&control_path, &from_flags)? {
+            info!("market control: seeded from --market");
+        }
+
+        {
+            let tx = tx.clone();
+            sources.spawn(async move {
+                sources::polymarket::run(&[], clock, tx, market_rx).await?;
+                Ok::<_, anyhow::Error>("polymarket: finished".to_string())
+            });
+        }
+        sources.spawn(async move {
+            control::watch(control_path, market_tx).await?;
+            Ok::<_, anyhow::Error>("control: finished".to_string())
+        });
 
         if let Some(engine_path) = cli.engine_path.clone() {
             let (depth, multipv) = (cli.depth, cli.multipv);
