@@ -42,8 +42,8 @@ is hypothetical, computed from recorded prices, and the payload says so (`"hypot
 | `/api/runs` · `/api/config` | the process runs in the file · the settings in force |
 | `/api/logs` | every log on disk, grouped by event |
 
-Most routes take `?log=<tournament>/<round>.jsonl` and `?run=N` (`-1` for the whole file). The
-newest log and its newest run are the defaults, and every response says which log it answered from.
+Most routes take `?log=<tournament>/<round>.jsonl`; the newest is the default, and every response
+says which log it answered from. There is no run parameter — the whole file is always served.
 
 `?log=` is the one place a request chooses a path, so only paths `/api/logs` already lists are
 accepted — which rules out traversal without having to reason about `..`.
@@ -59,6 +59,20 @@ inventing a fact. The PGN result token is the only honest end-of-game signal —
 between titled players end in resignations, so the final position is not mate and the board says
 nothing. `url` is the `GameURL` header verbatim, never constructed.
 
+## Processing latency
+
+`/api/games/{id}` carries a `latency` block: per ply, how long from logging the move to its
+evaluation being available, what the engine's own search cost at each depth, and the difference —
+time the position spent *not* being searched.
+
+**Measured on `mono_ms`, and only within a run.** It is a duration, which is what the monotonic
+clock is for, and a pair either side of a restart is hours apart on the wall clock while being
+nothing of the sort.
+
+It excludes Lichess's relay delay, which is theirs and invisible from in here. `depths_emitted_together`
+counts the moves whose depths all reached the log at the same instant — when that is most of them,
+the cheap early depth is buying no earliness.
+
 ## Runs, and why they exist
 
 The tool appends to its log, so one file usually holds several process runs — and `mono_ms` restarts
@@ -66,11 +80,17 @@ with each process. Subtracting across a boundary gives a duration wrong by howev
 stopped, and a `StateTracker` carried across one would compare the end of yesterday's game with the
 start of today's.
 
-So the file is split into runs and everything works on one at a time. A boundary is where the
-monotonic clock goes backwards, or where the two clocks disagree about how much time passed: inside
-one process they advance together, including through a stall, so drift between them means a
-different process — or a system clock that stepped, which is equally a reason not to subtract
-across it.
+So the file is split into runs — but that is an internal seam, not a view. Everything the
+measurement produces already runs on the wall clock (triggers, tape alignment, entry latency, P&L),
+and the wall clock is continuous across a restart. The whole file is served, on a wall-clock axis,
+and a boundary is simply somewhere the analysis declines to join two records: a trigger tracker is
+not carried over one, a processing latency is not measured across one, and the ordering check does
+not report one as corruption.
+
+A boundary is where the monotonic clock goes backwards **while real time did not**, or where the two
+clocks disagree about how much time passed. Inside one process they advance together, including
+through a forty-minute think — which is ordinary classical chess and precisely the event this
+project exists to catch, so it must never split.
 
 This is not hypothetical. The first real log had one stale note from an earlier run at the top; with
 the whole file treated as one span, signals timed off the wall clock landed **5 hours 45 minutes**

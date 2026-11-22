@@ -21,6 +21,17 @@ import Shell from "../layouts/Shell.astro";
     <div class="hidden" id="evaltable" style="max-height:320px;overflow:auto;margin-top:10px"></div>
   </section>
 
+  <section class="card" style="margin-bottom:14px">
+    <header>
+      <h2>Processing latency</h2>
+      <span class="sub">move logged → evaluation available · our own lag, not the relay's</span>
+    </header>
+    <div class="grid tiles" id="lattiles" style="margin-bottom:12px"></div>
+    <div class="legend" id="latlegend"></div>
+    <div class="chart" id="latchart"></div>
+    <p class="muted" id="latnote" style="font-size:.78rem;margin:8px 0 0"></p>
+  </section>
+
   <section class="grid cols-2" style="margin-bottom:14px">
     <div class="card">
       <header><h2>Signals</h2><span class="sub">hypothetical positions</span></header>
@@ -156,6 +167,61 @@ import Shell from "../layouts/Shell.astro";
       : `<p class="empty">no evaluations for this game</p>`;
   }
 
+  const ms = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}s` : `${Math.round(v)}ms`);
+
+  function renderLatency(g: GameDetail) {
+    const l = g.latency;
+    const s = l.summary;
+    const tile = (label: string, value: string, hint = "") =>
+      `<div class="card tile"><div class="label">${esc(label)}</div>
+       <div class="value">${esc(value)}</div><div class="hint">${esc(hint)}</div></div>`;
+
+    $("lattiles").innerHTML = s.n
+      ? [
+          tile("Median", ms(s.median_ms), `${s.n} moves evaluated`),
+          tile("p90", ms(s.p90_ms), "nine in ten under this"),
+          tile("Worst", ms(s.max_ms), "the one that would have missed"),
+          tile(
+            "Not searching",
+            ms(s.median_queue_ms),
+            "median time queued, parsing, in channels",
+          ),
+          ...s.searches.map((d) => tile(`Engine d${d.depth}`, ms(d.median_ms), "median search")),
+        ].join("")
+      : `<p class="empty">no evaluations for this game — nothing to measure</p>`;
+
+    const rows = l.per_ply;
+    $("latlegend").innerHTML = rows.length
+      ? `<span class="key" style="color:var(--series-1)"><span class="swatch"></span>total</span>
+         <span class="key" style="color:var(--series-2)"><span class="swatch"></span>not searching</span>`
+      : "";
+    drawChart($("latchart"), {
+      series: [
+        {
+          name: "total",
+          color: "var(--series-1)",
+          points: rows.map((r) => ({ x: r.ply, y: r.total_ms })),
+        },
+        {
+          name: "not searching",
+          color: "var(--series-2)",
+          points: rows.map((r) => ({ x: r.ply, y: r.queue_ms })),
+        },
+      ],
+      height: 200,
+      fmtX: (n) => `ply ${Math.round(n)}`,
+      fmtY: (n) => ms(n),
+      labelEnds: false,
+    });
+
+    const together = l.depths_emitted_together;
+    $("latnote").textContent = !s.n
+      ? ""
+      : together
+        ? `Every depth of ${together} of ${s.n} moves reached the log at the same instant — the engine sends its depths when the search ends, so the cheap early depth buys no earliness.`
+        : `Measured on ${l.measured}.`;
+  }
+
   function renderSignals(g: GameDetail) {
     $("signals").innerHTML = g.signals.length
       ? `<table><thead><tr><th class="num">t</th><th>Move</th><th>Transition</th>
@@ -255,6 +321,7 @@ import Shell from "../layouts/Shell.astro";
       link.classList.toggle("hidden", !g.url);
       if (g.url) link.href = g.url;
       renderChart(g, m);
+      renderLatency(g);
       renderSignals(g);
       renderChanges(g);
       renderPlies(g);

@@ -6,7 +6,6 @@ export type Meta = {
   mtime: number;
   size: number;
   t0_wall: number;
-  run_index: number;
   run_count: number;
   runs: RunInfo[];
 };
@@ -187,8 +186,31 @@ export type Dashboard = Meta & {
   recent: FeedRow[];
 };
 
+export type LatencyRow = {
+  ply: number;
+  first_eval_ms: number;
+  total_ms: number;
+  queue_ms: number;
+  searches: Record<string, number | null>;
+};
+
+export type Latency = {
+  per_ply: LatencyRow[];
+  summary: {
+    n: number;
+    median_ms: number;
+    p90_ms: number;
+    max_ms: number;
+    median_queue_ms: number;
+    searches: { depth: number; median_ms: number; n: number }[];
+  };
+  depths_emitted_together: number;
+  measured: string;
+};
+
 export type GameDetail = GameInfo & {
   revision: number;
+  latency: Latency;
   game_id: string;
   state: string | null;
   decision_depth: number | null;
@@ -210,13 +232,12 @@ async function get<T>(path: string): Promise<T> {
 }
 
 /** Which log and which run a request is about. Both optional; the server has sensible defaults. */
-export type Scope = { log?: string | null; run?: number | null };
+export type Scope = { log?: string | null };
 
 const qs = (scope: Scope, extra: Record<string, string | number> = {}) => {
   const p = new URLSearchParams();
   for (const [k, v] of Object.entries(extra)) p.set(k, String(v));
   if (scope.log) p.set("log", scope.log);
-  if (scope.run !== null && scope.run !== undefined) p.set("run", String(scope.run));
   const s = p.toString();
   return s ? `?${s}` : "";
 };

@@ -6,7 +6,6 @@ import Shell from "../layouts/Shell.astro";
   <div class="pickers" id="pickers">
     <label>Event <select class="btn" id="event"></select></label>
     <label>Round <select class="btn" id="round"></select></label>
-    <label class="hidden" id="runwrap">Run <select class="btn" id="run"></select></label>
     <span class="muted" id="pickernote"></span>
   </div>
 
@@ -58,21 +57,19 @@ import Shell from "../layouts/Shell.astro";
   const SERIES = ["var(--series-1)", "var(--series-2)", "var(--series-3)"];
   const $ = (id: string) => document.getElementById(id)!;
   const params = new URLSearchParams(location.search);
-  let run: number | null = params.has("run") ? Number(params.get("run")) : null;
   let log: string | null = params.get("log");
-  const scope = () => ({ log, run });
+  const scope = () => ({ log });
 
   const setUrl = () => {
     const u = new URL(location.href);
     log ? u.searchParams.set("log", log) : u.searchParams.delete("log");
-    run === null ? u.searchParams.delete("run") : u.searchParams.set("run", String(run));
+    u.searchParams.delete("run");
     history.replaceState(null, "", u);
   };
 
   const linkFor = (gameId: string) => {
     const p = new URLSearchParams({ id: gameId });
     if (log) p.set("log", log);
-    if (run !== null) p.set("run", String(run));
     return `/game?${p}`;
   };
 
@@ -258,7 +255,7 @@ import Shell from "../layouts/Shell.astro";
   }
 
   const fill = (sel: HTMLSelectElement, opts: [string, string][], value: string) => {
-    const want = opts.map(([v, t]) => `${v} ${t}`).join("|");
+    const want = opts.map(([v, t]) => `${v}\u0000${t}`).join("|");
     if (sel.dataset.sig !== want) {
       sel.innerHTML = opts
         .map(([v, t]) => `<option value="${esc(v)}">${esc(t)}</option>`)
@@ -289,47 +286,26 @@ import Shell from "../layouts/Shell.astro";
       log ?? "",
     );
 
-    // A run selector only when a file actually holds more than one process run.
-    $("runwrap").classList.toggle("hidden", d.run_count < 2);
-    if (d.run_count >= 2) {
-      fill(
-        $("run") as HTMLSelectElement,
-        d.runs.map(
-          (r) =>
-            [String(r.index), `run ${r.index + 1} — ${when(r.started_unix)} · ${secs(r.span_s)}`] as [
-              string,
-              string,
-            ],
-        ),
-        String(d.run_index),
-      );
-    }
 
+    // Runs are no longer a view to choose. Say when a file has them, because it explains a gap.
     $("pickernote").textContent =
-      d.run_count >= 2 ? "this file holds several runs — durations are only valid inside one" : "";
+      d.run_count >= 2 ? `${d.run_count} process runs in this file` : "";
   }
 
   ($("event") as HTMLSelectElement).addEventListener("change", (ev) => {
     const slug = (ev.target as HTMLSelectElement).value;
     const group = latest?.logs.find((e) => e.slug === slug);
     log = group?.rounds[0]?.path ?? null;
-    run = null;
     setUrl();
     refresh();
   });
 
   ($("round") as HTMLSelectElement).addEventListener("change", (ev) => {
     log = (ev.target as HTMLSelectElement).value;
-    run = null;
     setUrl();
     refresh();
   });
 
-  ($("run") as HTMLSelectElement).addEventListener("change", (ev) => {
-    run = Number((ev.target as HTMLSelectElement).value);
-    setUrl();
-    refresh();
-  });
 
   let latest: Dashboard | null = null;
   let busy = false;

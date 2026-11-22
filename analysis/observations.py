@@ -139,21 +139,70 @@ def tail(path: str, from_line: int = 0) -> Iterator[Record]:
                 yield rec
 
 
+# How far the two clocks may disagree before the records belong to different process runs.
+DRIFT_TOLERANCE_MS = 30_000
+
+
+def split_runs(records: list[Record]) -> list[tuple[int, int]]:
+    """`[start, end)` index pairs, one per process run, in log order.
+
+    The tool appends, so one file usually holds several runs — and `mono_ms` restarts at zero with
+    each process. That makes a run boundary a real seam in the data: durations cannot be subtracted
+    across it, and a `StateTracker` carried over one would compare the last evaluation before the
+    program was stopped with the first one after it was started again.
+
+    A boundary is where the monotonic clock goes backwards, or where the two clocks disagree about
+    how much time passed. Inside one process they advance together, **including through a long
+    think**, so drift between them means a different process — or a system clock that stepped,
+    which is equally a reason not to subtract across it.
+
+    Note what this deliberately does not do: it does not split on a long gap. A forty-minute think
+    is ordinary in classical chess and is exactly the event this project exists to catch.
+
+    A monotonic clock going backwards counts only when **real time did not** — a restart resets
+    `mono_ms` while the wall clock keeps going forward. Both clocks stepping back together is not a
+    restart, it is a damaged or interleaved file, and `check_ordering` must still be able to say so.
+    """
+    if not records:
+        return []
+    bounds: list[tuple[int, int]] = []
+    start = 0
+    for i in range(1, len(records)):
+        prev, cur = records[i - 1], records[i]
+        d_mono = cur.mono_ms - prev.mono_ms
+        d_wall = cur.wall_unix_ms - prev.wall_unix_ms
+        restarted = d_mono < 0 <= d_wall
+        if restarted or abs(d_wall - d_mono) > DRIFT_TOLERANCE_MS:
+            bounds.append((start, i))
+            start = i
+    bounds.append((start, len(records)))
+    return bounds
+
+
 def check_ordering(records: list[Record]) -> list[str]:
-    """Monotonic clock must not go backwards, and plies must not arrive out of order per game."""
+    """Monotonic clock must not go backwards, and plies must not arrive out of order per game.
+
+    Both checks are **per run**: `mono_ms` restarting and a game's plies starting again are what a
+    restart looks like, not corruption. Checking across the whole file would report every restart
+    as a fault and bury the real ones.
+    """
     problems: list[str] = []
-    prev_mono = -1
-    for r in records:
-        if r.mono_ms < prev_mono:
-            problems.append(f"line {r.line_no}: mono_ms went backwards ({r.mono_ms} < {prev_mono})")
-        prev_mono = max(prev_mono, r.mono_ms)
-    seen: dict[str, int] = {}
-    for r in records:
-        if r.source != "ply" or r.ply is None:
-            continue
-        key = r.game_id or "?"
-        last = seen.get(key, 0)
-        if r.ply <= last:
-            problems.append(f"line {r.line_no}: ply {r.ply} not after {last} in game {key}")
-        seen[key] = max(last, r.ply)
+    for start, end in split_runs(records):
+        chunk = records[start:end]
+        prev_mono = -1
+        for r in chunk:
+            if r.mono_ms < prev_mono:
+                problems.append(
+                    f"line {r.line_no}: mono_ms went backwards ({r.mono_ms} < {prev_mono})"
+                )
+            prev_mono = max(prev_mono, r.mono_ms)
+        seen: dict[str, int] = {}
+        for r in chunk:
+            if r.source != "ply" or r.ply is None:
+                continue
+            key = r.game_id or "?"
+            last = seen.get(key, 0)
+            if r.ply <= last:
+                problems.append(f"line {r.line_no}: ply {r.ply} not after {last} in game {key}")
+            seen[key] = max(last, r.ply)
     return problems

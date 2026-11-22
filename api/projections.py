@@ -228,6 +228,7 @@ def game(snap: Snapshot, game_id: str, cfg: PipelineConfig) -> dict[str, Any] | 
         "evals": [_eval_point(snap, r) for r in evals],
         "state_changes": changes,
         "signals": [_signal_point(snap, s) for s in sigs],
+        "latency": latency(snap, game_id),
     }
 
 
@@ -318,3 +319,104 @@ def describe(r: Record) -> str:
     if r.source == "signal":
         return f"{p.get('kind')} conf={p.get('confidence')} {p.get('reason')}"
     return str(p.get("message", ""))
+
+
+def _percentile(sorted_values: list[float], q: float) -> float:
+    """Nearest-rank. With a handful of moves an interpolated percentile invents precision."""
+    if not sorted_values:
+        return 0.0
+    i = max(0, min(len(sorted_values) - 1, int(round(q * (len(sorted_values) - 1)))))
+    return sorted_values[i]
+
+
+def latency(snap: Snapshot, game_id: str) -> dict[str, Any]:
+    """How long this program took to react to each move — the one number we control.
+
+    **Measured on `mono_ms`, and only within a run.** This is a duration, which is what the
+    monotonic clock is for, and the two records either side of a restart are hours apart on the
+    wall clock while being nothing of the sort.
+
+    Per ply:
+
+    - `total_ms` — logging the move to its evaluation being available. The figure a code change
+      has to move: the lag between the information existing and us able to act on it.
+    - `searches` — what the engine says each depth's search cost.
+    - `queue_ms` — `total_ms` minus the deepest search. Time this position spent *not* being
+      searched: waiting behind other boards, parsing, channel hops.
+
+    It excludes Lichess's own relay delay, which is theirs and invisible from in here.
+
+    `depths_emitted_together` is worth watching. The engine collects its depths and sends them when
+    the search ends, so depth 12's verdict does not arrive when depth 12 finishes — it waits for
+    depth 16. That makes the cheap early depth useless for acting early, which was the reason for
+    emitting it.
+    """
+    runs = [(r["first_index"], r["last_index"]) for r in snap.runs] or [(0, len(snap.records) - 1)]
+
+    def run_of(i: int) -> int:
+        for n, (a, b) in enumerate(runs):
+            if a <= i <= b:
+                return n
+        return 0
+
+    moves: dict[tuple[int, int], Record] = {}
+    evals: dict[tuple[int, int], list[Record]] = {}
+    for i, r in enumerate(snap.records):
+        if r.game_id != game_id or r.ply is None:
+            continue
+        key = (run_of(i), r.ply)
+        if r.source == "ply":
+            moves.setdefault(key, r)
+        elif r.source == "eval" and key in moves:
+            evals.setdefault(key, []).append(r)
+
+    rows: list[dict[str, Any]] = []
+    emitted_together = 0
+    for key in sorted(evals, key=lambda k: (k[0], k[1])):
+        move, group = moves[key], evals[key]
+        searches = {
+            r.payload["depth"]: r.payload.get("search_ms")
+            for r in group
+            if isinstance(r.payload.get("depth"), int)
+        }
+        first = min(r.mono_ms for r in group) - move.mono_ms
+        total = max(r.mono_ms for r in group) - move.mono_ms
+        deepest = max((v for v in searches.values() if v), default=0)
+        if len({r.mono_ms for r in group}) == 1 and len(group) > 1:
+            emitted_together += 1
+        rows.append(
+            {
+                "ply": key[1],
+                "first_eval_ms": max(0, first),
+                "total_ms": max(0, total),
+                "queue_ms": max(0, total - deepest),
+                "searches": {str(d): v for d, v in sorted(searches.items())},
+            }
+        )
+
+    totals = sorted(r["total_ms"] for r in rows)
+    queues = sorted(r["queue_ms"] for r in rows)
+    depths: dict[str, list[int]] = {}
+    for r in rows:
+        for d, v in r["searches"].items():
+            if v:
+                depths.setdefault(d, []).append(v)
+
+    return {
+        "per_ply": rows,
+        "summary": {
+            "n": len(rows),
+            "median_ms": _percentile(totals, 0.5),
+            "p90_ms": _percentile(totals, 0.9),
+            "max_ms": totals[-1] if totals else 0,
+            "median_queue_ms": _percentile(queues, 0.5),
+            "searches": [
+                {"depth": int(d), "median_ms": _percentile(sorted(v), 0.5), "n": len(v)}
+                for d, v in sorted(depths.items(), key=lambda kv: int(kv[0]))
+            ],
+        },
+        # True when every depth of a position reaches the log at the same instant, which means the
+        # cheap early depth buys no earliness at all.
+        "depths_emitted_together": emitted_together,
+        "measured": "mono_ms, within a run",
+    }

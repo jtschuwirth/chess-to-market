@@ -15,7 +15,7 @@ from typing import Any
 
 from .config_defaults import PipelineConfig
 from .findability import Candidate, findability
-from .observations import Record
+from .observations import Record, split_runs
 from .paper import PaperTrade, implied_legs, simulate
 from .triggers import StateTracker, Trigger
 
@@ -165,7 +165,10 @@ def run(records: list[Record], cfg: PipelineConfig | None = None) -> Result:
         elif r.source == "note":
             h.notes.append(str(r.payload.get("message")))
     if records:
-        h.span_s = (records[-1].mono_ms - records[0].mono_ms) / 1000.0
+        # Wall clock: this is "how much time the log covers", and a file spanning a restart covers
+        # the gap too. `mono_ms` restarts, so subtracting it across one understates the span by
+        # however long the tool was stopped.
+        h.span_s = records[-1].ts - records[0].ts
 
     for r in records:
         if r.source == "ply" and r.payload.get("san"):
@@ -173,8 +176,16 @@ def run(records: list[Record], cfg: PipelineConfig | None = None) -> Result:
 
     res.tape = build_tape(records)
 
-    trackers: dict[str, StateTracker] = {}
-    for r in records:
+    # Keyed by run as well as game: a restart means we stopped watching, and the first evaluation
+    # after it has nothing to legitimately transition from. A long think is NOT a reason to reset
+    # — the tracker must see across those, since that is where the event happens.
+    trackers: dict[tuple[int, str], StateTracker] = {}
+    run_of: dict[int, int] = {}
+    for run_index, (start, end) in enumerate(split_runs(records)):
+        for i in range(start, end):
+            run_of[i] = run_index
+
+    for i, r in enumerate(records):
         if r.source != "eval":
             continue
         if cfg.eval_depth is not None and r.payload.get("depth") != cfg.eval_depth:
@@ -182,7 +193,7 @@ def run(records: list[Record], cfg: PipelineConfig | None = None) -> Result:
         wdl = r.wdl_white()
         if wdl is None:
             continue
-        key = r.game_id or "?"
+        key = (run_of.get(i, 0), r.game_id or "?")
         tracker = trackers.setdefault(key, StateTracker(cfg.trigger))
         trig = tracker.update(wdl[0], wdl[1], wdl[2], ts=r.ts)
         if trig is None:

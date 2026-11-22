@@ -8,18 +8,17 @@ Re-running the whole pipeline on a change is deliberate. The pipeline is pure, a
 — incremental state — is the kind of thing that disagrees with a backtest over the same log, which
 would make the dashboard untrustworthy exactly when it matters.
 
-## Runs
+## Runs are a fact of the data, not a view of it
 
-One log file usually holds several process runs, because the tool appends. That matters more than
-it sounds: `mono_ms` restarts at zero with each process, so subtracting across a boundary gives a
-duration that is wrong by however long the tool was stopped, and a `StateTracker` carried across one
-would compare the end of yesterday's game with the start of today's.
+One file holds every run ever made, and `mono_ms` restarts with each process. That matters for
+three things, all of them internal: the trigger tracker must not reason across a boundary, a
+processing latency must not be measured across one, and the ordering check must not report a
+restart as corruption.
 
-So the log is split into runs and everything downstream works on one run at a time — the newest by
-default. A boundary is where the monotonic clock goes backwards, or where the two clocks disagree
-about how much time passed: within a process they advance together, including through a stall, so
-drift between them means a different process (or a system clock that stepped, which is equally a
-reason not to subtract across it).
+It does **not** mean showing one run at a time. Everything the measurement produces already runs on
+the wall clock — triggers, tape alignment, entry latency, P&L — and the wall clock is continuous
+across a restart. So the whole file is served, on a wall-clock axis, and a run boundary is simply
+somewhere the analysis declines to join two records together.
 """
 
 from __future__ import annotations
@@ -30,28 +29,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from analysis.config_defaults import PipelineConfig
-from analysis.observations import ParseReport, Record, check_ordering, read
+from analysis.observations import ParseReport, Record, check_ordering, read, split_runs
 from analysis.pipeline import Result, run
 
-# How far the two clocks may disagree before the records belong to different runs.
-DRIFT_TOLERANCE_MS = 30_000
-
-
-def split_runs(records: list[Record]) -> list[tuple[int, int]]:
-    """`[start, end)` index pairs, one per process run, in log order."""
-    if not records:
-        return []
-    bounds: list[tuple[int, int]] = []
-    start = 0
-    for i in range(1, len(records)):
-        prev, cur = records[i - 1], records[i]
-        d_mono = cur.mono_ms - prev.mono_ms
-        d_wall = cur.wall_unix_ms - prev.wall_unix_ms
-        if d_mono < 0 or abs(d_wall - d_mono) > DRIFT_TOLERANCE_MS:
-            bounds.append((start, i))
-            start = i
-    bounds.append((start, len(records)))
-    return bounds
+__all__ = ["LogStore", "Snapshot", "split_runs"]
 
 
 @dataclass
@@ -66,7 +47,6 @@ class Snapshot:
     mtime: float = 0.0
     size: int = 0
     missing: bool = True
-    run_index: int = 0
     runs: list[dict[str, Any]] = field(default_factory=list)
 
     @property
@@ -78,8 +58,14 @@ class Snapshot:
         return self.records[0].ts if self.records else 0.0
 
     def rel(self, record: Record) -> float:
-        """Seconds since this run started, by the monotonic clock."""
-        return round((record.mono_ms - self.t0_mono) / 1000.0, 3)
+        """Seconds since the first record, by the **wall** clock.
+
+        Wall rather than monotonic because this is a display axis shared by every source, and
+        `mono_ms` restarts with each process — which put signals hours away from the evaluations
+        that produced them the first time a log spanned a restart. Within a run the two agree;
+        across one, only this is continuous.
+        """
+        return round(record.ts - self.t0_wall, 3)
 
     def meta(self) -> dict[str, Any]:
         return {
@@ -90,7 +76,6 @@ class Snapshot:
             "mtime": self.mtime,
             "size": self.size,
             "t0_wall": self.t0_wall,
-            "run_index": self.run_index,
             "run_count": len(self.runs),
             "runs": self.runs,
         }
@@ -111,7 +96,7 @@ class LogStore:
         self._mtime = 0.0
         self._size = 0
         self._missing = True
-        self._cache: dict[int, Snapshot] = {}
+        self._snap: Snapshot | None = None
 
     def _runs_meta(self) -> list[dict[str, Any]]:
         out = []
@@ -125,6 +110,8 @@ class LogStore:
                     "span_s": round((chunk[-1].mono_ms - chunk[0].mono_ms) / 1000.0, 1)
                     if chunk
                     else 0.0,
+                    "first_index": a,
+                    "last_index": b - 1,
                 }
             )
         return out
@@ -136,7 +123,7 @@ class LogStore:
             if not self._missing or not self._revision:
                 self._revision += 1
             self._stat = None
-            self._records, self._bounds, self._cache = [], [], {}
+            self._records, self._bounds, self._snap = [], [], None
             self._report = ParseReport()
             self._missing = True
             return
@@ -151,38 +138,25 @@ class LogStore:
         self._missing = False
         self._stat = key
         self._revision += 1
-        self._cache = {}
+        self._snap = None
 
-    def snapshot(self, run_index: int | None = None) -> Snapshot:
-        """The newest run by default; `run_index` selects an earlier one, `-1` means all records."""
+    def snapshot(self) -> Snapshot:
+        """The whole file, parsed at most once per change."""
         with self._lock:
             self._reload()
-            if self._missing or not self._bounds:
-                return Snapshot(revision=self._revision, missing=self._missing, runs=[])
-
-            idx = len(self._bounds) - 1 if run_index is None else run_index
-            if idx == -1:
-                a, b = 0, len(self._records)
-            else:
-                idx = max(0, min(idx, len(self._bounds) - 1))
-                a, b = self._bounds[idx]
-
-            cached = self._cache.get(idx)
-            if cached is not None:
-                return cached
-
-            chunk = self._records[a:b]
-            snap = Snapshot(
+            if self._missing:
+                return Snapshot(revision=self._revision, missing=True, runs=[])
+            if self._snap is not None and self._snap.revision == self._revision:
+                return self._snap
+            self._snap = Snapshot(
                 revision=self._revision,
-                records=chunk,
+                records=self._records,
                 report=self._report,
-                result=run(chunk, self.cfg),
-                ordering=check_ordering(chunk),
+                result=run(self._records, self.cfg),
+                ordering=check_ordering(self._records),
                 mtime=self._mtime,
                 size=self._size,
                 missing=False,
-                run_index=idx,
                 runs=self._runs_meta(),
             )
-            self._cache[idx] = snap
-            return snap
+            return self._snap

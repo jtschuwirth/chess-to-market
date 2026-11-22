@@ -153,3 +153,55 @@ class TestSignals(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRunBoundaries(unittest.TestCase):
+    """A restart means we stopped watching. The tracker must not reason across one."""
+
+    def ev(self, mono, wall, wdl, ply):
+        return json.dumps({
+            "mono_ms": mono, "wall_unix_ms": wall,
+            "payload": {"source": "eval", "game_id": "g", "ply": ply, "depth": 16,
+                        "wdl_white": list(wdl)},
+        })
+
+    def test_the_first_eval_after_a_restart_cannot_fire(self):
+        base = 1_764_000_000_000
+        # Level before the restart; white winning after. Across a boundary that is not a trigger,
+        # it is simply the first thing we saw on starting up again.
+        recs = to_records([
+            self.ev(1000, base + 1000, (100, 800, 100), 10),
+            self.ev(20, base + 600_000, (950, 40, 10), 11),
+        ])
+        self.assertEqual(run(recs).signals, [])
+
+    def test_the_same_transition_inside_one_run_does_fire(self):
+        base = 1_764_000_000_000
+        recs = to_records([
+            self.ev(1000, base + 1000, (100, 800, 100), 10),
+            self.ev(2000, base + 2000, (950, 40, 10), 11),
+        ])
+        self.assertEqual(len(run(recs).signals), 1)
+
+    def test_a_long_think_does_not_reset_the_tracker(self):
+        # Forty minutes between evaluations is ordinary classical chess, and the swing across it is
+        # exactly what this project exists to catch.
+        base = 1_764_000_000_000
+        recs = to_records([
+            self.ev(1000, base + 1000, (100, 800, 100), 10),
+            self.ev(2_401_000, base + 2_401_000, (950, 40, 10), 11),
+        ])
+        self.assertEqual(len(run(recs).signals), 1)
+
+
+class TestSpan(unittest.TestCase):
+    def test_span_covers_the_gap_between_runs(self):
+        base = 1_764_000_000_000
+        recs = to_records([
+            json.dumps({"mono_ms": 1000, "wall_unix_ms": base + 1000,
+                        "payload": {"source": "note", "message": "a"}}),
+            json.dumps({"mono_ms": 20, "wall_unix_ms": base + 3_601_000,
+                        "payload": {"source": "note", "message": "b"}}),
+        ])
+        # An hour of wall time, even though the monotonic clocks say otherwise.
+        self.assertAlmostEqual(run(recs).health.span_s, 3600.0, places=1)

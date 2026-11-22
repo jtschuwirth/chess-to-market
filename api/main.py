@@ -119,10 +119,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "count": len(files),
         }
 
-    RUN = Query(
-        None,
-        description="Which process run to read; the newest by default, -1 for the whole file.",
-    )
 
     @app.get("/api/revision", summary="Cheap change check")
     def get_revision(log: str | None = LOG) -> dict[str, Any]:
@@ -131,60 +127,61 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/runs", summary="The process runs this log file holds")
     def get_runs(log: str | None = LOG) -> dict[str, Any]:
-        """A log is appended across restarts. Durations are only valid inside one run."""
+        """Informational. The whole file is always served; a run boundary is only somewhere the
+        analysis declines to join two records — a tracker is not carried over one, and a duration
+        is never measured across one."""
         chosen, store = pick(log)
         snap = store.snapshot()
-        return {"log": chosen, "revision": snap.revision, "current": snap.run_index, "runs": snap.runs}
+        return {"log": chosen, "revision": snap.revision, "runs": snap.runs}
 
     @app.get("/api/health", summary="What the log contains, and what is missing")
-    def get_health(run: int | None = RUN, log: str | None = LOG) -> dict[str, Any]:
+    def get_health(log: str | None = LOG) -> dict[str, Any]:
         chosen, store = pick(log)
-        snap = store.snapshot(run)
+        snap = store.snapshot()
         return {"log": chosen} | snap.meta() | proj.health(snap)
 
     @app.get("/api/games", summary="One row per game")
-    def get_games(run: int | None = RUN, log: str | None = LOG) -> dict[str, Any]:
+    def get_games(log: str | None = LOG) -> dict[str, Any]:
         chosen, store = pick(log)
-        snap = store.snapshot(run)
+        snap = store.snapshot()
         return {"log": chosen, "revision": snap.revision, "games": proj.games(snap, settings.pipeline)}
 
     @app.get("/api/games/{game_id}", summary="Plies, evaluations, state changes, signals")
-    def get_game(game_id: str, run: int | None = RUN, log: str | None = LOG) -> dict[str, Any]:
+    def get_game(game_id: str, log: str | None = LOG) -> dict[str, Any]:
         chosen, store = pick(log)
-        snap = store.snapshot(run)
+        snap = store.snapshot()
         body = proj.game(snap, game_id, settings.pipeline)
         if body is None:
             raise HTTPException(status_code=404, detail=f"no game {game_id!r} in the log")
         return {"log": chosen, "revision": snap.revision} | body
 
     @app.get("/api/market", summary="The two-sided tape, per leg")
-    def get_market(run: int | None = RUN, log: str | None = LOG) -> dict[str, Any]:
+    def get_market(log: str | None = LOG) -> dict[str, Any]:
         chosen, store = pick(log)
-        snap = store.snapshot(run)
+        snap = store.snapshot()
         return {"log": chosen, "revision": snap.revision} | proj.market(snap)
 
     @app.get("/api/signals", summary="Triggers, confidence, and hypothetical positions")
-    def get_signals(run: int | None = RUN, log: str | None = LOG) -> dict[str, Any]:
+    def get_signals(log: str | None = LOG) -> dict[str, Any]:
         chosen, store = pick(log)
-        snap = store.snapshot(run)
+        snap = store.snapshot()
         return {"log": chosen, "revision": snap.revision} | proj.signals(snap)
 
     @app.get("/api/recent", summary="The raw tail of the log")
-    def get_recent(limit: int = Query(100, ge=1, le=2000), run: int | None = RUN, log: str | None = LOG) -> dict[str, Any]:
+    def get_recent(limit: int = Query(100, ge=1, le=2000), log: str | None = LOG) -> dict[str, Any]:
         chosen, store = pick(log)
-        snap = store.snapshot(run)
+        snap = store.snapshot()
         return {"log": chosen, "revision": snap.revision, "records": proj.recent(snap, limit)}
 
     @app.get("/api/dashboard", summary="Everything the overview needs, in one call")
     def get_dashboard(
         recent_limit: int = Query(60, ge=0, le=500),
-        run: int | None = RUN,
         log: str | None = LOG,
     ) -> dict[str, Any]:
         """One request per refresh. Separate endpoints exist, but polling four of them means four
         chances to render a half-updated page."""
         chosen, store = pick(log)
-        snap = store.snapshot(run)
+        snap = store.snapshot()
         return (
             {"log": chosen}
             | snap.meta()

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from analysis.observations import KNOWN, check_ordering, parse_line, read, tail
+from analysis.observations import split_runs, KNOWN, check_ordering, parse_line, read, tail
 
 
 def line(mono, source, **payload):
@@ -128,3 +128,60 @@ def read_from(lines):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRunSplitting(unittest.TestCase):
+    """A log file holds every run ever made, and `mono_ms` restarts with each process."""
+
+    def recs(self, pairs):
+        return read_from(
+            [
+                json.dumps(
+                    {"mono_ms": m, "wall_unix_ms": w, "payload": {"source": "note", "message": "x"}}
+                )
+                for m, w in pairs
+            ]
+        )[0]
+
+    def test_one_run_is_one_slice(self):
+        base = 1_764_000_000_000
+        self.assertEqual(split_runs(self.recs([(i * 1000, base + i * 1000) for i in range(5)])), [(0, 5)])
+
+    def test_a_restart_splits(self):
+        base = 1_764_000_000_000
+        recs = self.recs([(700_000, base + 700_000), (12, base + 700_000 + 4000)])
+        self.assertEqual(split_runs(recs), [(0, 1), (1, 2)])
+
+    def test_a_short_run_restarted_quickly_still_splits(self):
+        # Drift alone would miss this one: both deltas are small.
+        base = 1_764_000_000_000
+        recs = self.recs([(5000, base + 5000), (10, base + 10_000)])
+        self.assertEqual(split_runs(recs), [(0, 1), (1, 2)])
+
+    def test_a_long_think_is_not_a_restart(self):
+        # Forty minutes between records is ordinary classical chess, and the tracker must see
+        # across it — that is the event we are looking for.
+        base = 1_764_000_000_000
+        recs = self.recs([(1000, base + 1000), (2_401_000, base + 2_401_000)])
+        self.assertEqual(split_runs(recs), [(0, 2)])
+
+    def test_both_clocks_going_back_is_corruption_not_a_restart(self):
+        base = 1_764_000_000_000
+        recs = self.recs([(10, base + 10), (5, base + 5)])
+        self.assertEqual(split_runs(recs), [(0, 2)])
+        self.assertTrue(any("backwards" in p for p in check_ordering(recs)))
+
+    def test_a_restart_is_not_reported_as_a_fault(self):
+        base = 1_764_000_000_000
+        recs = self.recs([(700_000, base + 700_000), (12, base + 704_000)])
+        self.assertEqual(check_ordering(recs), [])
+
+    def test_a_game_replayed_after_a_restart_is_not_out_of_order(self):
+        base = 1_764_000_000_000
+        recs = read_from([
+            json.dumps({"mono_ms": 500_000, "wall_unix_ms": base + 500_000,
+                        "payload": {"source": "ply", "game_id": "g", "ply": 40, "san": "a"}}),
+            json.dumps({"mono_ms": 10, "wall_unix_ms": base + 520_000,
+                        "payload": {"source": "ply", "game_id": "g", "ply": 1, "san": "b"}}),
+        ])[0]
+        self.assertEqual(check_ordering(recs), [], "a restart re-sends the game from ply 1")

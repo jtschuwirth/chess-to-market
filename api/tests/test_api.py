@@ -149,36 +149,35 @@ class TestRunSplitting(unittest.TestCase):
 
 
 @unittest.skipIf(TestClient is None, "fastapi not installed")
-class TestRunSelection(unittest.TestCase):
+class TestRunsAreInternal(unittest.TestCase):
+    """A restart is a seam in the data, not a view to choose between."""
+
     def setUp(self) -> None:
         old = generate()[:3]
-        new = generate()
-        shifted = []
-        for line in new:
+        new = []
+        for line in generate():
             o = json.loads(line)
             o["wall_unix_ms"] += 6 * 3600 * 1000  # the restart, six hours later
-            shifted.append(json.dumps(o))
-        self.log = write_log(old + shifted)
+            new.append(json.dumps(o))
+        self.log = write_log(old + new)
         self.client = TestClient(create_app(Settings(log_path=str(self.log))))
 
-    def test_the_newest_run_is_served_by_default(self) -> None:
-        runs = self.client.get("/api/runs").json()
-        self.assertEqual(len(runs["runs"]), 2)
-        self.assertEqual(runs["current"], 1)
-        self.assertEqual(self.client.get("/api/revision").json()["records"], runs["runs"][1]["records"])
-
-    def test_an_earlier_run_can_be_asked_for(self) -> None:
-        meta = self.client.get("/api/health?run=0").json()
-        self.assertEqual(meta["run_index"], 0)
-        self.assertEqual(meta["records"], 3)
-
-    def test_run_minus_one_is_the_whole_file(self) -> None:
-        meta = self.client.get("/api/health?run=-1").json()
+    def test_the_whole_file_is_served(self) -> None:
+        meta = self.client.get("/api/revision").json()
         self.assertEqual(meta["records"], meta["lines"])
+        self.assertEqual(meta["run_count"], 2)
 
-    def test_signals_and_evals_share_one_axis_inside_a_run(self) -> None:
-        # The bug this guards: a signal timed off the wall clock and an evaluation timed off the
-        # monotonic one land hours apart on the chart once a log spans a restart.
+    def test_runs_are_reported_but_not_selected(self) -> None:
+        body = self.client.get("/api/runs").json()
+        self.assertEqual(len(body["runs"]), 2)
+        self.assertNotIn("current", body, "nothing picks a run any more")
+
+    def test_a_restart_is_not_an_ordering_fault(self) -> None:
+        self.assertEqual(self.client.get("/api/health").json()["ordering_problems"], [])
+
+    def test_signals_and_evals_share_one_axis_across_a_restart(self) -> None:
+        # The bug this guards: an evaluation timed off the monotonic clock and a signal timed off
+        # the wall clock land hours apart once a log spans a restart.
         gid = self.client.get("/api/games").json()["games"][0]["game_id"]
         body = self.client.get(f"/api/games/{gid}").json()
         if not body["signals"] or not body["evals"]:
@@ -369,3 +368,91 @@ class TestLogSelection(unittest.TestCase):
         client = TestClient(create_app(Settings(log_dir=str(Path(tempfile.mkdtemp())))))
         self.assertEqual(client.get("/api/logs").json()["count"], 0)
         self.assertTrue(client.get("/api/health").json()["log_missing"])
+
+
+@unittest.skipIf(TestClient is None, "fastapi not installed")
+class TestProcessingLatency(unittest.TestCase):
+    """How long we took to react to a move — the one number a code change can move."""
+
+    BASE = 1_764_000_000_000
+
+    def rec(self, mono: int, payload: dict) -> str:
+        return json.dumps(
+            {"mono_ms": mono, "wall_unix_ms": self.BASE + mono, "payload": payload}
+        )
+
+    def ply(self, mono: int, ply: int) -> str:
+        return self.rec(
+            mono,
+            {"source": "ply", "game_id": "g", "ply": ply, "san": "e4", "uci": "e2e4",
+             "fen": "x", "move_unix_ms": self.BASE + mono},
+        )
+
+    def eval_(self, mono: int, ply: int, depth: int, search_ms: int) -> str:
+        return self.rec(
+            mono,
+            {"source": "eval", "game_id": "g", "ply": ply, "depth": depth,
+             "search_ms": search_ms, "wdl_white": [100, 800, 100]},
+        )
+
+    def client_for(self, lines: list[str]) -> "TestClient":
+        return TestClient(create_app(Settings(log_path=str(write_log(lines)))))
+
+    def latency(self, lines: list[str]) -> dict:
+        return self.client_for(lines).get("/api/games/g").json()["latency"]
+
+    def test_total_is_from_the_move_to_its_evaluation(self) -> None:
+        lat = self.latency([self.ply(1000, 1), self.eval_(2600, 1, 16, 1400)])
+        row = lat["per_ply"][0]
+        self.assertEqual(row["total_ms"], 1600)
+        self.assertEqual(row["searches"], {"16": 1400})
+        self.assertEqual(row["queue_ms"], 200, "total minus the deepest search")
+
+    def test_one_row_per_ply_carrying_every_depth(self) -> None:
+        lat = self.latency(
+            [self.ply(1000, 1), self.eval_(1100, 1, 12, 70), self.eval_(2600, 1, 16, 1400)]
+        )
+        self.assertEqual(len(lat["per_ply"]), 1, "a ply is one move, however many depths it got")
+        row = lat["per_ply"][0]
+        self.assertEqual(row["searches"], {"12": 70, "16": 1400})
+        self.assertEqual(row["first_eval_ms"], 100, "depth 12 arrived early here")
+        self.assertEqual(row["total_ms"], 1600)
+
+    def test_depths_arriving_together_are_counted(self) -> None:
+        # The engine batches its depths until the search ends, so the cheap early depth buys no
+        # earliness. Worth seeing rather than inferring from two identical columns.
+        lat = self.latency(
+            [self.ply(1000, 1), self.eval_(2600, 1, 12, 70), self.eval_(2600, 1, 16, 1400)]
+        )
+        self.assertEqual(lat["depths_emitted_together"], 1)
+        self.assertEqual(lat["per_ply"][0]["first_eval_ms"], lat["per_ply"][0]["total_ms"])
+
+    def test_the_summary_is_what_a_tweak_has_to_move(self) -> None:
+        lines = [self.ply(0, 1), self.eval_(100, 1, 16, 90),
+                 self.ply(1000, 2), self.eval_(1300, 2, 16, 280),
+                 self.ply(2000, 3), self.eval_(2900, 3, 16, 880)]
+        s = self.latency(lines)["summary"]
+        self.assertEqual(s["n"], 3)
+        self.assertEqual(s["median_ms"], 300)
+        self.assertEqual(s["max_ms"], 900)
+        self.assertEqual(s["searches"], [{"depth": 16, "median_ms": 280, "n": 3}])
+
+    def test_a_latency_is_never_measured_across_a_restart(self) -> None:
+        # The move was logged before the restart, the evaluation after it. On the wall clock those
+        # are six hours apart; as a processing latency the pair is meaningless, not slow.
+        restart = json.dumps(
+            {"mono_ms": 20, "wall_unix_ms": self.BASE + 6 * 3600_000,
+             "payload": {"source": "eval", "game_id": "g", "ply": 1, "depth": 16,
+                         "search_ms": 10, "wdl_white": [100, 800, 100]}}
+        )
+        lat = self.latency([self.ply(1000, 1), restart])
+        self.assertEqual(lat["per_ply"], [], "the pair spans a boundary, so there is no latency")
+
+    def test_an_evaluation_with_no_matching_move_is_skipped(self) -> None:
+        lat = self.latency([self.eval_(2600, 7, 16, 1400)])
+        self.assertEqual(lat["per_ply"], [])
+
+    def test_no_engine_means_no_latency_rather_than_zero(self) -> None:
+        lat = self.latency([self.ply(1000, 1), self.ply(2000, 2)])
+        self.assertEqual(lat["summary"]["n"], 0)
+        self.assertEqual(lat["summary"]["searches"], [])
