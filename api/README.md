@@ -8,8 +8,11 @@ is the only thing that needs installing.
 
 ```powershell
 cd code; python -m venv .venv; .\.venv\Scripts\python.exe -m pip install -r api\requirements.txt
-cd code; .\.venv\Scripts\python.exe -m api --log logs/run.jsonl
+cd code; .\.venv\Scripts\python.exe -m api --log logs/<tournament>/<round>.jsonl
 ```
+
+The Rust writes one file per round, under `logs/<tournament-slug>/<round-slug>.jsonl`, so point
+`--log` at the round you want to watch. The server reads exactly the one file it is given.
 
 Interactive docs at <http://127.0.0.1:8000/docs>.
 

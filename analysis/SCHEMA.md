@@ -114,6 +114,10 @@ Python can also derive signals itself from `eval` records — the same `StateTra
 {"source": "note", "message": "polymarket: reconnected after 2 attempts (backoff 4s)"}
 ```
 
+The first note of a live run names the round, so a log says what it is even when separated from its
+filename: `lichess: FIDE World Junior Chess Championship 2026 | Open · Round 5 (yRwFuCyK), startsAt
+1795295700000`.
+
 Source start, death, reconnect, dropped stale positions, cooldown suppressions. **Gaps in the data
 must be explainable afterwards**, or the lag figures around them cannot be trusted.
 

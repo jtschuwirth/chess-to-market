@@ -1,6 +1,6 @@
 //! The Lichess broadcast feed: a round snapshot, or the live stream of its games.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use reqwest::Response;
 use tokio::sync::mpsc::Sender;
 use tokio_stream::StreamExt;
@@ -8,27 +8,19 @@ use tracing::error;
 use tracing::info;
 use tracing::warn;
 
+use crate::broadcast::{round_meta, RoundMeta};
 use crate::observation::{Clock, Observation, Payload};
 use crate::pgn;
 use crate::pgn::Position;
 use crate::pgn::clocks::{ClockReading, TimeControl};
 use crate::pgn::stream::GameStream;
 
-/// The round's scheduled start, which anchors every reconstructed move time.
-async fn round_starts_at_ms(round_id: &str) -> Result<u64> {
-    let url = format!("https://lichess.org/api/broadcast/-/-/{round_id}");
-    let body = reqwest::get(url).await?.error_for_status()?.text().await?;
-    let v: serde_json::Value = serde_json::from_str(&body)?;
-    v["round"]["startsAt"]
-        .as_u64()
-        .context("round metadata has no startsAt")
-}
-
 async fn streaming_run(
     round_id: &str,
     clock: Clock,
     tx: Sender<Observation>,
     pos_tx: Sender<Position>,
+    meta: Option<RoundMeta>,
 ) -> Result<()> {
     info!("Running streaming request mode");
     let url: String = format!(
@@ -39,7 +31,10 @@ async fn streaming_run(
     let stream = res.bytes_stream();
     tokio::pin!(stream);
 
-    let starts_at_ms = round_starts_at_ms(round_id).await?;
+    let starts_at_ms = match meta {
+        Some(m) => m.starts_at_ms,
+        None => round_meta(round_id).await?.starts_at_ms,
+    };
     let tc = TimeControl::default();
     let mut games = GameStream::new();
     let _ = tx
@@ -135,6 +130,7 @@ pub async fn run(
     tx: Sender<Observation>,
     pos_tx: Sender<Position>,
     stream_data: bool,
+    meta: Option<RoundMeta>,
 ) -> Result<()> {
     let url: String = format!("https://lichess.org/api/broadcast/round/{}.pgn", round_id);
     let res: Response = reqwest::get(url).await?;
@@ -146,7 +142,7 @@ pub async fn run(
     );
 
     if stream_data {
-        match streaming_run(round_id, clock, tx, pos_tx).await {
+        match streaming_run(round_id, clock, tx, pos_tx, meta).await {
             Ok(()) => println!("Stream end"),
             Err(e) => error!("lichess: {e:#}"),
         }

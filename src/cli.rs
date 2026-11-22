@@ -67,9 +67,17 @@ pub struct Cli {
     #[arg(long, default_value_t = 4)]
     pub multipv: u32,
 
-    /// Where to append the JSONL log.
-    #[arg(long, default_value = "logs/run.jsonl", value_name = "FILE")]
-    pub out: PathBuf,
+    /// Where to append the JSONL log. Overrides the per-round path entirely.
+    #[arg(long, value_name = "FILE")]
+    pub out: Option<PathBuf>,
+
+    /// Root for the per-round logs: `<dir>/<tournament>/<round>.jsonl`.
+    ///
+    /// One file per round, on purpose. A rehearsal against an old round must not land in the file
+    /// the live run will be read from — and one file per round keeps any of them small enough to
+    /// re-parse on every change.
+    #[arg(long, default_value = "logs", value_name = "DIR")]
+    pub log_dir: PathBuf,
 }
 
 impl Cli {

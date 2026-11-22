@@ -7,6 +7,7 @@
 use anyhow::Result;
 use chess_to_market::pgn::Position;
 use chess_to_market::Observation;
+use chess_to_market::broadcast::{round_meta, RoundMeta};
 use chess_to_market::cli::Cli;
 use chess_to_market::observation::Clock;
 use chess_to_market::sink::JsonlSink;
@@ -26,6 +27,26 @@ const CHANNEL_DEPTH: usize = 1024;
 
 const POSITION_DEPTH: usize = 64;
 
+/// Where this run writes, and what round it is following.
+///
+/// `--out` wins outright; otherwise a round gets its own file under `--log-dir`. Resolving it here,
+/// before the sink opens, is what keeps a run's first record out of the wrong file.
+///
+/// A round whose metadata cannot be fetched is fatal rather than a fallback to a shared log: a bad
+/// round id should say so, not quietly append a run's worth of records somewhere unexpected.
+async fn resolve_log(cli: &Cli) -> Result<(std::path::PathBuf, Option<RoundMeta>)> {
+    let round = match (&cli.round_id, cli.is_replay()) {
+        (Some(id), false) => Some(round_meta(id).await?),
+        _ => None,
+    };
+    let path = match (&cli.out, &round) {
+        (Some(out), _) => out.clone(),
+        (None, Some(meta)) => meta.log_path(&cli.log_dir),
+        (None, None) => cli.log_dir.join("run.jsonl"),
+    };
+    Ok((path, round))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -38,7 +59,14 @@ async fn main() -> Result<()> {
     let clock = Clock::new();
     let (tx, mut rx) = mpsc::channel::<Observation>(CHANNEL_DEPTH);
     let (pos_tx, pos_rx) = mpsc::channel::<Position>(POSITION_DEPTH);
-    let mut sink = JsonlSink::open(&cli.out).await?;
+
+    // Resolved before anything is written, so the first record already lands in the right file.
+    let (out, round) = resolve_log(&cli).await?;
+    let mut sink = JsonlSink::open(&out).await?;
+    info!("log: {}", out.display());
+    if let Some(meta) = &round {
+        let _ = tx.send(clock.note(meta.describe())).await;
+    }
     let mut sources = JoinSet::new();
 
     if let Some(path) = cli.replay.clone() {
@@ -54,8 +82,9 @@ async fn main() -> Result<()> {
             let tx = tx.clone();
             let pos_tx = pos_tx.clone();
             let stream = cli.stream;
+            let meta = round.clone();
             sources.spawn(async move {
-                sources::lichess::run(&round_id, clock, tx, pos_tx, stream).await?;
+                sources::lichess::run(&round_id, clock, tx, pos_tx, stream, meta).await?;
                 Ok::<_, anyhow::Error>("lichess: finished".to_string())
             });
         } else {
@@ -123,6 +152,6 @@ async fn main() -> Result<()> {
     }
 
     let written = sink.close().await?;
-    info!("wrote {written} records to {}", cli.out.display());
+    info!("wrote {written} records to {}", out.display());
     Ok(())
 }

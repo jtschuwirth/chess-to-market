@@ -14,6 +14,7 @@
 //!
 //! Adding a feed means writing a producer. Nothing else in the program changes.
 
+pub mod broadcast;
 pub mod cli;
 pub mod fetch;
 pub mod observation;

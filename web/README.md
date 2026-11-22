@@ -11,7 +11,7 @@ It is read-only. It can place no order, because nothing it talks to can.
 Two processes. The API first:
 
 ```powershell
-cd code; .\.venv\Scripts\python.exe -m api --log logs/run.jsonl
+cd code; .\.venv\Scripts\python.exe -m api --log logs/<tournament>/<round>.jsonl
 ```
 
 Then the dashboard:
